@@ -10,7 +10,7 @@ $version = (Select-String -Path "$root\Cargo.toml" -Pattern '^version = "(.+)"' 
 $env:RUSTFLAGS = '-C target-feature=+crt-static'
 Push-Location $root
 try {
-    cargo build --release -p quarry-app -p quarry-ai --target-dir "$root\target\dist"
+    cargo build --release --locked -p quarry-app -p quarry-ai --target-dir "$root\target\dist"
     if ($LASTEXITCODE) { throw "cargo build failed ($LASTEXITCODE)" }
 } finally {
     Pop-Location

@@ -1,0 +1,106 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - "v[0-9]*"
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Existing version tag to release (for example, v0.1.0)
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release-${{ inputs.tag || github.ref_name }}
+  cancel-in-progress: false
+
+jobs:
+  windows:
+    name: Windows x64
+    runs-on: windows-2022
+    timeout-minutes: 90
+    permissions:
+      contents: write
+    defaults:
+      run:
+        shell: pwsh
+    env:
+      RELEASE_TAG: ${{ inputs.tag || github.ref_name }}
+      CARGO_TERM_COLOR: always
+      CARGO_INCREMENTAL: "0"
+      RUSTFLAGS: -C target-feature=+crt-static
+
+    steps:
+      - name: Check out the release tag
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: refs/tags/${{ inputs.tag || github.ref_name }}
+          persist-credentials: false
+
+      - name: Validate the release version
+        run: |
+          $version = (Select-String -Path Cargo.toml -Pattern '^version = "([^"]+)"').Matches[0].Groups[1].Value
+          if ($env:RELEASE_TAG -cne "v$version") {
+            throw "Tag $env:RELEASE_TAG does not match Cargo.toml version v$version"
+          }
+          "RELEASE_VERSION=$version" >> $env:GITHUB_ENV
+
+      - name: Install Rust 1.98.0
+        run: |
+          rustup toolchain install 1.98.0 --profile minimal --no-self-update
+          if ($LASTEXITCODE) { throw 'Rust installation failed' }
+          rustup default 1.98.0
+          if ($LASTEXITCODE) { throw 'Rust toolchain selection failed' }
+
+      - name: Cache Rust dependencies
+        uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+        with:
+          workspaces: ". -> target/dist"
+          cache-on-failure: true
+
+      - name: Run unit and SQLite tests
+        run: cargo test --workspace --release --locked --target-dir target/dist
+
+      - name: Build the Windows installer
+        run: ./packaging/windows/build-installer.ps1
+
+      - name: Package downloads and checksums
+        run: |
+          $version = $env:RELEASE_VERSION
+          $downloads = New-Item -ItemType Directory -Force -Path target/downloads
+          Copy-Item -LiteralPath "target/dist/installer/QuarrySetup-$version-x64.exe" -Destination $downloads
+          $portable = New-Item -ItemType Directory -Force -Path "target/Quarry-$version-windows-x64"
+          Copy-Item -LiteralPath target/dist/release/quarry.exe, target/dist/release/quarry-mcp.exe, LICENSE, README.md -Destination $portable
+          Copy-Item -LiteralPath docs -Destination $portable -Recurse
+          Compress-Archive -Path "$portable/*" -DestinationPath "$downloads/Quarry-$version-windows-x64.zip"
+          Get-ChildItem -LiteralPath $downloads -File | Sort-Object Name | ForEach-Object {
+            $hash = (Get-FileHash -LiteralPath $_.FullName -Algorithm SHA256).Hash.ToLowerInvariant()
+            "$hash  $($_.Name)"
+          } | Set-Content -LiteralPath "$downloads/SHA256SUMS.txt" -Encoding ascii
+
+      - name: Publish the GitHub release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        run: |
+          $version = $env:RELEASE_VERSION
+          $notes = @"
+          Native database client for Windows, built with Rust and GPUI. Supports PostgreSQL, MySQL, MariaDB, SQLite, and AI tools through the bundled MCP server.
+
+          ## Downloads
+          - **QuarrySetup-$version-x64.exe**: Windows installer (recommended).
+          - **Quarry-$version-windows-x64.zip**: portable app, MCP server, and documentation.
+          - **SHA256SUMS.txt**: SHA-256 checksums for both downloads.
+
+          Requires Windows 10 version 1809 or later, x64. Backup and restore of server databases also require the corresponding database command-line tools on PATH.
+          "@
+          $notes | Set-Content -LiteralPath target/release-notes.md -Encoding utf8
+          $assets = (Get-ChildItem -LiteralPath target/downloads -File).FullName
+          gh release create $env:RELEASE_TAG @assets --verify-tag --draft --title "Quarry $env:RELEASE_TAG" --notes-file target/release-notes.md --generate-notes
+          if ($LASTEXITCODE) { throw 'Release creation or asset upload failed' }
+          gh release edit $env:RELEASE_TAG --draft=false --latest
+          if ($LASTEXITCODE) { throw 'Release publication failed' }

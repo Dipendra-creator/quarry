@@ -23,10 +23,16 @@ The roadmap at the end lists what TablePlus has that Quarry does not have yet.
 
 ## Install (Windows)
 
-Run `QuarrySetup-<version>-x64.exe`. It installs for the current user without admin
+Download `QuarrySetup-<version>-x64.exe` from the
+[latest release](https://github.com/Dipendra-creator/quarry/releases/latest) and run it.
+It installs for the current user without admin
 rights; the first page also offers "install for all users". It adds Start menu and
 optional desktop shortcuts and an uninstaller, and installs `quarry-mcp.exe` next to
 the app. Uninstalling keeps your saved connections and passwords.
+
+The release also includes `Quarry-<version>-windows-x64.zip` for portable use. Extract
+it and run `quarry.exe`; `quarry-mcp.exe` is included alongside it. `SHA256SUMS.txt`
+contains SHA-256 checksums for the installer and ZIP.
 
 To build the installer yourself, install [Inno Setup 6](https://jrsoftware.org/isinfo.php)
 (`winget install JRSoftware.InnoSetup`) and run:
@@ -114,6 +120,24 @@ cargo test -p quarry-core --test live
 
 `QUARRY_TEST_SSH` and `QUARRY_TEST_PG_VIA_SSH` add the SSH tunnel test (see
 `crates/quarry-core/tests/live.rs`).
+
+## Releasing
+
+The [Release workflow](.github/workflows/release.yml) runs when a version tag is pushed.
+Update the workspace version in `Cargo.toml`, run `cargo check` to refresh `Cargo.lock`,
+and commit the changes before tagging. For example, after updating the version to
+`0.1.1`:
+
+```sh
+git tag -a v0.1.1 -m "Quarry v0.1.1"
+git push origin main
+git push origin v0.1.1
+```
+
+The workflow checks the tag against the workspace version, runs the unit and SQLite
+tests, builds the Windows installer and portable ZIP, and publishes a release with
+SHA-256 checksums. You can also run it manually from GitHub Actions with an existing
+version tag. No extra repository secrets are required.
 
 ## Project layout
 
