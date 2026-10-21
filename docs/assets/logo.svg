@@ -1,0 +1,14 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1024 1024" width="256" height="256" role="img" aria-label="Quarry logo">
+  <title>Quarry</title>
+  <defs>
+    <linearGradient id="disc" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#4F8DFB"/>
+      <stop offset="1" stop-color="#1D4FC4"/>
+    </linearGradient>
+  </defs>
+  <circle cx="512" cy="512" r="496" fill="url(#disc)"/>
+  <g fill="none" stroke="#fff" stroke-width="52" stroke-linecap="round">
+    <ellipse cx="512" cy="330" rx="224" ry="54"/>
+    <path d="M288 515a224 54 0 0 0 448 0M288 700a224 54 0 0 0 448 0M288 330v370M736 330v370"/>
+  </g>
+</svg>

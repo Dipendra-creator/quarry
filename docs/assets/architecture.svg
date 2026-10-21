@@ -1,0 +1,131 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1280 664" width="1280" height="664" role="img" aria-label="Quarry's architecture. quarry-app, the GPUI desktop app, uses quarry-core directly for the data grid, editor and structure, and quarry-ai for the assistant pane. quarry-mcp, the MCP server for any AI agent, reaches quarry-ai through a localhost bridge. quarry-ai turns the core's Session API into 24 JSON tools behind a write gate, and runs the chat loop for Claude Code, Codex, Anthropic and OpenAI. quarry-core holds the Session API, SQL dialects, staged edits, structure edits, import and export, SSH tunnels and the store, with drivers for PostgreSQL, MySQL and MariaDB, and SQLite.">
+  <title>Quarry architecture</title>
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#0B1222"/>
+      <stop offset="1" stop-color="#111B33"/>
+    </linearGradient>
+    <marker id="arrow" viewBox="0 0 10 10" refX="8.5" refY="5" markerWidth="8" markerHeight="8" orient="auto-start-reverse">
+      <path d="M0 0L10 5L0 10z" fill="#7C8BAE"/>
+    </marker>
+    <style>
+      .ui { font-family: 'Segoe UI', -apple-system, BlinkMacSystemFont, 'Helvetica Neue', Arial, sans-serif; }
+      .mono { font-family: 'Cascadia Code', Consolas, 'SF Mono', Menlo, monospace; }
+      .crate { font-size: 21px; font-weight: 700; fill: #F2F5FF; }
+      .sub { font-size: 13px; fill: #A9B4CC; }
+      .chip { fill: #1A2440; stroke: #2F3B5E; }
+      .chiptext { font-size: 12.5px; font-weight: 600; fill: #E2E8F0; }
+      .chipdesc { font-size: 11.5px; fill: #93A1C1; }
+      .glyph { fill: none; stroke: #FFFFFF; stroke-width: 2; stroke-linecap: round; stroke-linejoin: round; }
+      .flow { stroke: #7C8BAE; stroke-width: 2; fill: none; }
+      .flowlabel { font-size: 12px; font-weight: 600; fill: #A9B4CC; }
+    </style>
+  </defs>
+
+  <rect width="1280" height="664" rx="24" fill="url(#bg)"/>
+  <rect x="0.5" y="0.5" width="1279" height="663" rx="23.5" fill="none" stroke="#FFFFFF" stroke-opacity="0.08"/>
+
+  <g class="ui">
+    <!-- quarry-app -->
+    <rect x="40" y="40" width="600" height="156" rx="16" fill="#131C31" stroke="#2563EB" stroke-opacity="0.7" stroke-width="1.5"/>
+    <rect x="58" y="56" width="34" height="34" rx="9" fill="#2563EB"/>
+    <g transform="translate(63 61)" class="glyph"><rect x="2" y="3" width="20" height="14" rx="2"/><path d="M8 21h8M12 17v4"/></g>
+    <text class="crate mono" x="106" y="74">quarry-app</text>
+    <text class="sub" x="106" y="92">The desktop app · GPUI + GPUI Kit</text>
+    <g text-anchor="middle">
+      <rect class="chip" x="58" y="110" width="180" height="30" rx="8"/><text class="chiptext" x="148" y="130">Connections &amp; welcome</text>
+      <rect class="chip" x="250" y="110" width="180" height="30" rx="8"/><text class="chiptext" x="340" y="130">Workspace &amp; tabs</text>
+      <rect class="chip" x="442" y="110" width="180" height="30" rx="8"/><text class="chiptext" x="532" y="130">Data grid &amp; structure</text>
+      <rect class="chip" x="58" y="148" width="180" height="30" rx="8"/><text class="chiptext" x="148" y="168">SQL editor</text>
+      <rect x="250" y="148" width="180" height="30" rx="8" fill="#2A1F4D" stroke="#7C3AED" stroke-opacity="0.7"/><text class="chiptext" x="340" y="168" fill="#E9DDFF">AI assistant pane</text>
+      <rect class="chip" x="442" y="148" width="180" height="30" rx="8"/><text class="chiptext" x="532" y="168">Preferences &amp; backup</text>
+    </g>
+
+    <!-- quarry-mcp -->
+    <rect x="680" y="40" width="560" height="156" rx="16" fill="#131C31" stroke="#059669" stroke-opacity="0.7" stroke-width="1.5"/>
+    <rect x="698" y="56" width="34" height="34" rx="9" fill="#059669"/>
+    <g transform="translate(703 61)" class="glyph"><path d="M12 22v-5M9 8V2M15 8V2M18 8v5a4 4 0 0 1-4 4h-4a4 4 0 0 1-4-4V8Z"/></g>
+    <text class="crate mono" x="746" y="74">quarry-mcp</text>
+    <text class="sub" x="746" y="92">MCP server (stdio) for any AI agent</text>
+    <rect class="chip" x="698" y="110" width="256" height="30" rx="8"/>
+    <text x="712" y="130" font-size="12.5"><tspan class="mono" font-weight="700" fill="#BFE9D6">--attach</tspan><tspan fill="#93A1C1"> the app's open connections</tspan></text>
+    <rect class="chip" x="966" y="110" width="256" height="30" rx="8"/>
+    <text x="980" y="130" font-size="12.5"><tspan class="mono" font-weight="700" fill="#BFE9D6">--standalone</tspan><tspan fill="#93A1C1"> saved connections</tspan></text>
+    <g text-anchor="middle" font-size="12" font-weight="600" fill="#CBD5E1">
+      <rect x="698" y="148" width="104" height="30" rx="8" fill="#0F2A24" stroke="#059669" stroke-opacity="0.5"/><text x="750" y="168">Claude Code</text>
+      <rect x="810" y="148" width="74" height="30" rx="8" fill="#0F2A24" stroke="#059669" stroke-opacity="0.5"/><text x="847" y="168">Codex</text>
+      <rect x="892" y="148" width="74" height="30" rx="8" fill="#0F2A24" stroke="#059669" stroke-opacity="0.5"/><text x="929" y="168">Cursor</text>
+      <rect x="974" y="148" width="248" height="30" rx="8" fill="#0F2A24" stroke="#059669" stroke-opacity="0.5" stroke-dasharray="4 3"/><text x="1098" y="168">… or any MCP client</text>
+    </g>
+
+    <!-- quarry-ai -->
+    <rect x="360" y="236" width="880" height="156" rx="16" fill="#131C31" stroke="#7C3AED" stroke-opacity="0.7" stroke-width="1.5"/>
+    <rect x="378" y="252" width="34" height="34" rx="9" fill="#7C3AED"/>
+    <g transform="translate(383 257)" class="glyph">
+      <path d="M9.937 15.5A2 2 0 0 0 8.5 14.063l-6.135-1.582a.5.5 0 0 1 0-.962L8.5 9.936A2 2 0 0 0 9.937 8.5l1.582-6.135a.5.5 0 0 1 .963 0L14.063 8.5A2 2 0 0 0 15.5 9.937l6.135 1.581a.5.5 0 0 1 0 .964L15.5 14.063a2 2 0 0 0-1.437 1.437l-1.582 6.135a.5.5 0 0 1-.963 0z"/>
+      <path d="M20 3v4M22 5h-4M4 17v2M5 18H3"/>
+    </g>
+    <text class="crate mono" x="426" y="270">quarry-ai</text>
+    <text class="sub" x="426" y="288">Every database feature as a tool an AI can call</text>
+    <rect class="chip" x="378" y="310" width="200" height="64" rx="10"/>
+    <text class="chiptext mono" x="392" y="332">Toolbox</text>
+    <text class="chipdesc" x="392" y="350">24 JSON tools with schemas</text>
+    <text class="chipdesc" x="392" y="365">schema, data, plans, SQL…</text>
+    <rect x="592" y="310" width="200" height="64" rx="10" fill="#3A2A0A" stroke="#FBBF24" stroke-opacity="0.6"/>
+    <text class="chiptext mono" x="606" y="332" fill="#FDE68A">WriteGate</text>
+    <text class="chipdesc" x="606" y="350" fill="#E5C27A">every change: your approval,</text>
+    <text class="chipdesc" x="606" y="365" fill="#E5C27A">or safe mode without the app</text>
+    <rect class="chip" x="806" y="310" width="200" height="64" rx="10"/>
+    <text class="chiptext mono" x="820" y="332">Chat</text>
+    <text class="chipdesc" x="820" y="350">agent loop: Claude Code, Codex,</text>
+    <text class="chipdesc" x="820" y="365">Anthropic API, OpenAI API</text>
+    <rect class="chip" x="1020" y="310" width="200" height="64" rx="10"/>
+    <text class="chiptext mono" x="1034" y="332">Bridge</text>
+    <text class="chipdesc" x="1034" y="350">localhost port + token,</text>
+    <text class="chipdesc" x="1034" y="365">so agents share your sessions</text>
+
+    <!-- quarry-core -->
+    <rect x="40" y="432" width="1200" height="180" rx="16" fill="#131C31" stroke="#0E7490" stroke-opacity="0.9" stroke-width="1.5"/>
+    <rect x="58" y="448" width="34" height="34" rx="9" fill="#0E7490"/>
+    <g transform="translate(63 453)" class="glyph">
+      <path d="m12.83 2.18a2 2 0 0 0-1.66 0L2.6 6.08a1 1 0 0 0 0 1.83l8.58 3.91a2 2 0 0 0 1.66 0l8.58-3.9a1 1 0 0 0 0-1.83Z"/>
+      <path d="m22 17.65-9.17 4.16a2 2 0 0 1-1.66 0L2 17.65M22 12.65l-9.17 4.16a2 2 0 0 1-1.66 0L2 12.65"/>
+    </g>
+    <text class="crate mono" x="106" y="466">quarry-core</text>
+    <text class="sub" x="106" y="484">The engine, with no UI code: one Session API for people and for AI</text>
+    <g text-anchor="middle">
+      <rect x="58" y="504" width="156" height="34" rx="8" fill="#0C2A35" stroke="#0E7490"/><text class="chiptext mono" x="136" y="526" fill="#A5F3FC">Session</text>
+      <rect class="chip" x="224" y="504" width="156" height="34" rx="8"/><text class="chiptext" x="302" y="526">SQL dialects</text>
+      <rect class="chip" x="390" y="504" width="156" height="34" rx="8"/><text class="chiptext" x="468" y="526">Staged edits → DML</text>
+      <rect class="chip" x="556" y="504" width="156" height="34" rx="8"/><text class="chiptext" x="634" y="526">Structure → ALTER</text>
+      <rect class="chip" x="722" y="504" width="156" height="34" rx="8"/><text class="chiptext" x="800" y="526">Import / export</text>
+      <rect class="chip" x="888" y="504" width="156" height="34" rx="8"/><text class="chiptext" x="966" y="526">SSH tunnels</text>
+      <rect class="chip" x="1054" y="504" width="168" height="34" rx="8"/><text class="chiptext" x="1138" y="526">Store + OS keychain</text>
+    </g>
+    <g font-size="13">
+      <rect x="58" y="556" width="380" height="38" rx="9" fill="#101829" stroke="#2F3B5E"/>
+      <rect x="68" y="563" width="24" height="24" rx="6" fill="#336791"/><text x="80" y="579.5" font-size="10.5" font-weight="700" fill="#FFFFFF" text-anchor="middle">Pg</text>
+      <text x="102" y="580" font-weight="600" fill="#E2E8F0">PostgreSQL <tspan class="mono" font-weight="400" font-size="12" fill="#93A1C1">tokio-postgres</tspan></text>
+      <rect x="450" y="556" width="380" height="38" rx="9" fill="#101829" stroke="#2F3B5E"/>
+      <rect x="460" y="563" width="24" height="24" rx="6" fill="#00758F"/><text x="472" y="579.5" font-size="10.5" font-weight="700" fill="#FFFFFF" text-anchor="middle">My</text>
+      <rect x="488" y="563" width="24" height="24" rx="6" fill="#8C6A4F"/><text x="500" y="579.5" font-size="10.5" font-weight="700" fill="#FFFFFF" text-anchor="middle">Ma</text>
+      <text x="522" y="580" font-weight="600" fill="#E2E8F0">MySQL, MariaDB <tspan class="mono" font-weight="400" font-size="12" fill="#93A1C1">mysql_async</tspan></text>
+      <rect x="842" y="556" width="380" height="38" rx="9" fill="#101829" stroke="#2F3B5E"/>
+      <rect x="852" y="563" width="24" height="24" rx="6" fill="#0F80CC"/><text x="864" y="579.5" font-size="10.5" font-weight="700" fill="#FFFFFF" text-anchor="middle">Sl</text>
+      <text x="886" y="580" font-weight="600" fill="#E2E8F0">SQLite <tspan class="mono" font-weight="400" font-size="12" fill="#93A1C1">rusqlite (bundled)</tspan></text>
+    </g>
+
+    <!-- dependencies -->
+    <path class="flow" d="M150 198V428" marker-end="url(#arrow)"/>
+    <text class="flowlabel" x="164" y="300">Arc&lt;Session&gt;</text>
+    <text class="flowlabel" x="164" y="318" font-weight="400" fill="#7C8BAE">grid, editor, structure</text>
+    <path class="flow" d="M500 198V232" marker-end="url(#arrow)"/>
+    <text class="flowlabel" x="512" y="221">assistant</text>
+    <path class="flow" d="M960 198V232" marker-end="url(#arrow)"/>
+    <text class="flowlabel" x="972" y="221">bridge</text>
+    <path class="flow" d="M800 394V428" marker-end="url(#arrow)"/>
+    <text class="flowlabel" x="812" y="417">same Session API</text>
+
+    <text x="640" y="645" font-size="13.5" fill="#A9B4CC" text-anchor="middle">The rule that keeps the crates apart: <tspan fill="#E2E8F0" font-weight="600">database behavior lives in quarry-core</tspan>, so anything a person can do, an agent can do.</text>
+  </g>
+</svg>

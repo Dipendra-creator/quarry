@@ -1,0 +1,175 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1280 580" width="1280" height="580" role="img" aria-label="How Quarry's AI works. Inside Quarry: you ask in plain words; the assistant (Claude Code, Codex, Anthropic API or OpenAI API) calls Quarry's 24 tools; reads go straight to your database, while changes wait for your approval (Ask first, Allow or Read only). From any MCP client: agents such as Claude Code, Codex or Cursor reach the same tools through quarry-mcp and a localhost bridge. When Quarry is closed, quarry-mcp opens saved connections itself and only Silent connections accept changes.">
+  <title>How Quarry's AI works</title>
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#0B1222"/>
+      <stop offset="1" stop-color="#111B33"/>
+    </linearGradient>
+    <marker id="arrow" viewBox="0 0 10 10" refX="8.5" refY="5" markerWidth="8" markerHeight="8" orient="auto-start-reverse">
+      <path d="M0 0L10 5L0 10z" fill="#6B7BA3"/>
+    </marker>
+    <marker id="arrowGreen" viewBox="0 0 10 10" refX="8.5" refY="5" markerWidth="8" markerHeight="8" orient="auto-start-reverse">
+      <path d="M0 0L10 5L0 10z" fill="#34D399"/>
+    </marker>
+    <marker id="arrowAmber" viewBox="0 0 10 10" refX="8.5" refY="5" markerWidth="8" markerHeight="8" orient="auto-start-reverse">
+      <path d="M0 0L10 5L0 10z" fill="#FBBF24"/>
+    </marker>
+    <style>
+      .ui { font-family: 'Segoe UI', -apple-system, BlinkMacSystemFont, 'Helvetica Neue', Arial, sans-serif; }
+      .mono { font-family: 'Cascadia Code', Consolas, 'SF Mono', Menlo, monospace; }
+      .box { fill: #141D33; stroke: #283453; stroke-width: 1.5; }
+      .title { font-size: 19px; font-weight: 700; fill: #F2F5FF; }
+      .desc { font-size: 13px; fill: #A9B4CC; }
+      .note { font-size: 12px; fill: #7C8BAE; }
+      .label { font-size: 13px; font-weight: 700; fill: #7C8BAE; letter-spacing: 1.5px; }
+      .glyph { fill: none; stroke: #FFFFFF; stroke-width: 2; stroke-linecap: round; stroke-linejoin: round; }
+      .flow { stroke: #6B7BA3; stroke-width: 2; fill: none; }
+      .flow-dash { stroke-dasharray: 6 6; animation: dash 1.2s linear infinite; }
+      @keyframes dash { to { stroke-dashoffset: -12; } }
+      @media (prefers-reduced-motion: reduce) { .flow-dash { animation: none; } }
+    </style>
+  </defs>
+
+  <rect width="1280" height="580" rx="24" fill="url(#bg)"/>
+  <rect x="0.5" y="0.5" width="1279" height="579" rx="23.5" fill="none" stroke="#FFFFFF" stroke-opacity="0.08"/>
+
+  <g class="ui">
+    <text class="label" x="40" y="52">INSIDE QUARRY</text>
+
+    <!-- reads skip the approval step -->
+    <path class="flow flow-dash" d="M660 72C660 22 1124 22 1124 72" stroke="#34D399" marker-end="url(#arrowGreen)"/>
+    <rect x="818" y="25" width="148" height="24" rx="12" fill="#0F2A24" stroke="#34D399" stroke-opacity="0.6"/>
+    <text x="892" y="41.5" font-size="12" font-weight="600" fill="#6EE7B7" text-anchor="middle">reads run directly</text>
+
+    <!-- 1. You -->
+    <rect class="box" x="40" y="72" width="204" height="228" rx="16"/>
+    <rect x="58" y="88" width="34" height="34" rx="9" fill="#2563EB"/>
+    <g transform="translate(63 93)"><path class="glyph" d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/></g>
+    <text class="title" x="58" y="148">You ask</text>
+    <text class="desc" x="58" y="170">In plain words, or paste SQL.</text>
+    <rect x="58" y="186" width="170" height="52" rx="12" fill="#243140"/>
+    <text x="72" y="207" font-size="13" fill="#E8EDF7">Which customers spent</text>
+    <text x="72" y="226" font-size="13" fill="#E8EDF7">the most this year?</text>
+    <rect x="58" y="248" width="170" height="34" rx="10" fill="#1A2440" stroke="#2F3B5E"/>
+    <text x="70" y="270" font-size="11.5" fill="#93C5FD">SQL editor › Ask AI › Optimize</text>
+
+    <!-- 2. Assistant -->
+    <rect class="box" x="290" y="72" width="204" height="228" rx="16"/>
+    <rect x="308" y="88" width="34" height="34" rx="9" fill="#7C3AED"/>
+    <g transform="translate(313 93)" class="glyph">
+      <path d="M9.937 15.5A2 2 0 0 0 8.5 14.063l-6.135-1.582a.5.5 0 0 1 0-.962L8.5 9.936A2 2 0 0 0 9.937 8.5l1.582-6.135a.5.5 0 0 1 .963 0L14.063 8.5A2 2 0 0 0 15.5 9.937l6.135 1.581a.5.5 0 0 1 0 .964L15.5 14.063a2 2 0 0 0-1.437 1.437l-1.582 6.135a.5.5 0 0 1-.963 0z"/>
+      <path d="M20 3v4M22 5h-4M4 17v2M5 18H3"/>
+    </g>
+    <text class="title" x="308" y="148">Assistant</text>
+    <text class="desc" x="308" y="170">Ctrl+L · a chat per connection</text>
+    <g font-size="11.5" font-weight="600" fill="#E9DDFF" text-anchor="middle">
+      <rect x="308" y="188" width="82" height="30" rx="8" fill="#2A1F4D" stroke="#7C3AED" stroke-opacity="0.6"/>
+      <text x="349" y="207">Claude Code</text>
+      <rect x="398" y="188" width="82" height="30" rx="8" fill="#2A1F4D" stroke="#7C3AED" stroke-opacity="0.6"/>
+      <text x="439" y="207">Codex</text>
+      <rect x="308" y="226" width="82" height="30" rx="8" fill="#2A1F4D" stroke="#7C3AED" stroke-opacity="0.6"/>
+      <text x="349" y="245">Anthropic API</text>
+      <rect x="398" y="226" width="82" height="30" rx="8" fill="#2A1F4D" stroke="#7C3AED" stroke-opacity="0.6"/>
+      <text x="439" y="245">OpenAI API</text>
+    </g>
+    <text class="note" x="308" y="280">Your own login or API key</text>
+
+    <!-- 3. Tools -->
+    <rect class="box" x="540" y="72" width="204" height="228" rx="16"/>
+    <rect x="558" y="88" width="34" height="34" rx="9" fill="#059669"/>
+    <g transform="translate(563 93)"><path class="glyph" d="M14.7 6.3a1 1 0 0 0 0 1.4l1.6 1.6a1 1 0 0 0 1.4 0l3.77-3.77a6 6 0 0 1-7.94 7.94l-6.91 6.91a2.12 2.12 0 0 1-3-3l6.91-6.91a6 6 0 0 1 7.94-7.94l-3.76 3.76z"/></g>
+    <text class="title" x="558" y="148">24 Quarry tools</text>
+    <text class="desc" x="558" y="170">Schema, data, plans, SQL</text>
+    <g class="mono" font-size="12.5" fill="#BFE9D6">
+      <text x="558" y="196">schema_overview</text>
+      <text x="558" y="214">describe_table</text>
+      <text x="558" y="232">get_ddl</text>
+      <text x="558" y="250">explain_query</text>
+      <text x="558" y="268">run_sql</text>
+      <text x="558" y="286">update_row · …</text>
+    </g>
+
+    <!-- 4. Approval -->
+    <rect class="box" x="790" y="72" width="204" height="228" rx="16"/>
+    <rect x="808" y="88" width="34" height="34" rx="9" fill="#D97706"/>
+    <g transform="translate(813 93)" class="glyph">
+      <path d="M20 13c0 5-3.5 7.5-7.66 8.95a1 1 0 0 1-.67-.01C7.5 20.5 4 18 4 13V6a1 1 0 0 1 1-1c2 0 4.5-1.2 6.24-2.72a1.17 1.17 0 0 1 1.52 0C14.51 3.81 17 5 19 5a1 1 0 0 1 1 1z"/>
+      <path d="m9 12 2 2 4-4"/>
+    </g>
+    <text class="title" x="808" y="148">You approve</text>
+    <text class="desc" x="808" y="170">Changes show their SQL first</text>
+    <g font-size="12.5" font-weight="600">
+      <rect x="808" y="186" width="168" height="28" rx="8" fill="#3A2A0A" stroke="#FBBF24" stroke-opacity="0.7"/>
+      <text x="822" y="205" fill="#FDE68A">Ask first</text>
+      <text x="962" y="205" font-size="11" font-weight="400" fill="#FBBF24" text-anchor="end">default</text>
+      <rect x="808" y="220" width="168" height="28" rx="8" fill="#1B2540" stroke="#2F3B5E"/>
+      <text x="822" y="239" fill="#CBD5E1">Allow</text>
+      <rect x="808" y="254" width="168" height="28" rx="8" fill="#1B2540" stroke="#2F3B5E"/>
+      <text x="822" y="273" fill="#CBD5E1">Read only</text>
+    </g>
+
+    <!-- 5. Database -->
+    <rect class="box" x="1040" y="72" width="204" height="228" rx="16"/>
+    <rect x="1058" y="88" width="34" height="34" rx="9" fill="#0E7490"/>
+    <g transform="translate(1063 93)" class="glyph">
+      <ellipse cx="12" cy="5" rx="9" ry="3"/>
+      <path d="M3 5V19A9 3 0 0 0 21 19V5"/>
+      <path d="M3 12A9 3 0 0 0 21 12"/>
+    </g>
+    <text class="title" x="1058" y="148">Your database</text>
+    <text class="desc" x="1058" y="170">Local, remote or over SSH</text>
+    <g font-size="13" fill="#E2E8F0">
+      <rect x="1058" y="184" width="24" height="24" rx="6" fill="#336791"/><text x="1070" y="200.5" font-size="10.5" font-weight="700" fill="#FFFFFF" text-anchor="middle">Pg</text><text x="1092" y="201">PostgreSQL</text>
+      <rect x="1058" y="212" width="24" height="24" rx="6" fill="#00758F"/><text x="1070" y="228.5" font-size="10.5" font-weight="700" fill="#FFFFFF" text-anchor="middle">My</text><text x="1092" y="229">MySQL</text>
+      <rect x="1058" y="240" width="24" height="24" rx="6" fill="#8C6A4F"/><text x="1070" y="256.5" font-size="10.5" font-weight="700" fill="#FFFFFF" text-anchor="middle">Ma</text><text x="1092" y="257">MariaDB</text>
+      <rect x="1058" y="268" width="24" height="24" rx="6" fill="#0F80CC"/><text x="1070" y="284.5" font-size="10.5" font-weight="700" fill="#FFFFFF" text-anchor="middle">Sl</text><text x="1092" y="285">SQLite</text>
+    </g>
+
+    <!-- row arrows -->
+    <path class="flow" d="M246 186H286" marker-end="url(#arrow)"/>
+    <path class="flow" d="M496 186H536" marker-end="url(#arrow)"/>
+    <path class="flow" d="M746 186H786" stroke="#FBBF24" marker-end="url(#arrowAmber)"/>
+    <text x="767" y="214" font-size="10.5" font-weight="600" fill="#FBBF24" text-anchor="middle">changes</text>
+    <path class="flow" d="M996 186H1036" marker-end="url(#arrow)"/>
+    <text x="1017" y="214" font-size="10.5" font-weight="600" fill="#8A9BC2" text-anchor="middle">allowed</text>
+
+    <text class="label" x="40" y="388">FROM ANY MCP CLIENT</text>
+
+    <!-- External agents -->
+    <rect class="box" x="40" y="410" width="454" height="130" rx="16"/>
+    <rect x="58" y="426" width="34" height="34" rx="9" fill="#334155"/>
+    <g transform="translate(63 431)" class="glyph"><path d="M4 17l6-6-6-6M12 19h8"/></g>
+    <text class="title" x="106" y="450">Your AI agents</text>
+    <text class="desc" x="58" y="484">Anything that speaks MCP can drive Quarry:</text>
+    <g font-size="12" font-weight="600" fill="#E2E8F0" text-anchor="middle">
+      <rect x="58" y="498" width="96" height="28" rx="8" fill="#1E293B" stroke="#334155"/><text x="106" y="517">Claude Code</text>
+      <rect x="162" y="498" width="70" height="28" rx="8" fill="#1E293B" stroke="#334155"/><text x="197" y="517">Codex</text>
+      <rect x="240" y="498" width="70" height="28" rx="8" fill="#1E293B" stroke="#334155"/><text x="275" y="517">Cursor</text>
+      <rect x="318" y="498" width="158" height="28" rx="8" fill="#1E293B" stroke="#334155" stroke-dasharray="4 3"/><text x="397" y="517">any MCP client</text>
+    </g>
+
+    <!-- quarry-mcp -->
+    <rect class="box" x="540" y="410" width="204" height="130" rx="16"/>
+    <rect x="558" y="426" width="34" height="34" rx="9" fill="#059669"/>
+    <g transform="translate(563 431)" class="glyph"><path d="M12 22v-5M9 8V2M15 8V2M18 8v5a4 4 0 0 1-4 4h-4a4 4 0 0 1-4-4V8Z"/></g>
+    <text class="title" x="606" y="450">quarry-mcp</text>
+    <text class="desc" x="558" y="484">MCP server over stdio</text>
+    <text class="mono" x="558" y="514" font-size="12" fill="#BFE9D6">claude mcp add quarry</text>
+    <text class="mono" x="558" y="530" font-size="12" fill="#BFE9D6">  -- quarry-mcp</text>
+
+    <path class="flow" d="M496 475H536" marker-end="url(#arrow)"/>
+    <path class="flow flow-dash" d="M642 408V304" marker-end="url(#arrow)"/>
+    <text x="656" y="350" font-size="12" font-weight="600" fill="#A9B4CC">localhost bridge</text>
+    <text x="656" y="367" font-size="12" fill="#7C8BAE">token-protected, same</text>
+    <text x="656" y="383" font-size="12" fill="#7C8BAE">open connections</text>
+
+    <!-- When the app is closed -->
+    <rect x="790" y="410" width="454" height="130" rx="16" fill="#101829" stroke="#2F3B5E" stroke-width="1.5" stroke-dasharray="6 5"/>
+    <rect x="808" y="426" width="34" height="34" rx="9" fill="#334155"/>
+    <g transform="translate(813 431)" class="glyph"><path d="M12 2v10M18.4 6.6a9 9 0 1 1-12.77.04"/></g>
+    <text class="title" x="856" y="450">When Quarry is closed</text>
+    <text class="desc" x="808" y="484">quarry-mcp opens your saved connections itself.</text>
+    <text class="desc" x="808" y="504">Nobody is there to approve, so only connections</text>
+    <text class="desc" x="808" y="524">in <tspan fill="#E2E8F0" font-weight="600">Silent</tspan> safe mode accept changes.</text>
+  </g>
+</svg>
