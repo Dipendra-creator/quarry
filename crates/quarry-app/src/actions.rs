@@ -33,6 +33,7 @@ gpui_kit::actions!(
         OpenProcessList,
         OpenFile,
         SaveFile,
+        ToggleAssistant,
     ]
 );
 
@@ -72,5 +73,6 @@ pub fn bind(cx: &mut App) {
         KeyBinding::new("ctrl-.", OpenProcessList, ws),
         KeyBinding::new("ctrl-o", OpenFile, ws),
         KeyBinding::new("ctrl-shift-s", SaveFile, Some("QueryEditor")),
+        KeyBinding::new("ctrl-l", ToggleAssistant, ws),
     ]);
 }

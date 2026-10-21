@@ -77,6 +77,7 @@ title bar, segmented footers, pill tabs and driver badges.
 | `DatabaseBackupWindow`, `DatabaseRestoreWindow` | `backup.rs` |
 | `lightcolors.xaml` / `darkcolors.xaml` | `theme.rs` (`Palette`) |
 | Window input bindings | `actions.rs` |
+| (new) AI assistant pane and change approvals | `assistant.rs` |
 
 Database calls run on the core runtime and come back into GPUI through `state::db`:
 
@@ -93,6 +94,21 @@ Two GPUI rules the code depends on:
   such as `guard::guarded` with safe mode off, is deferred with `window.defer`.
 - Title-bar buttons stop mouse-down propagation (see `widgets::capsule`). Otherwise the
   title bar starts a window drag and the click is lost.
+
+## quarry-ai
+
+- `Toolbox` turns `Session` methods into JSON tools. Every change passes a `WriteGate`:
+  `SafeModeGate` (standalone `quarry-mcp`) or `ApprovalGate`, whose requests the app
+  shows as dialogs (`assistant::ask_approval`).
+- `bridge` serves the app's `Toolbox` on localhost (port and token in `bridge.json`), so
+  `quarry-mcp` started by any MCP client works on the app's open sessions.
+- `assistant::Chat` is the agent loop behind the assistant pane. The Anthropic and OpenAI
+  backends (`assistant/api.rs`) stream over HTTP and call the toolbox in-process. The
+  Claude Code and Codex backends (`assistant/cli.rs`) run the CLI per turn, resuming its
+  session, with `quarry-mcp --attach` as its only tools.
+
+The app owns one `Toolbox` and `ApprovalGate` in `AppState`, starts the bridge at launch,
+and runs each chat turn on the core runtime, streaming `ChatEvent`s back to the pane.
 
 ## Adding a driver
 

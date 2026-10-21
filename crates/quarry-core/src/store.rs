@@ -64,6 +64,12 @@ impl ConnectionStore {
         write_json(&self.path, &self.list)
     }
 
+    /// Re-reads the file, picking up connections another process saved.
+    pub fn reload(&mut self) -> Result<()> {
+        self.list = read_json(&self.path)?;
+        Ok(())
+    }
+
     /// Finds a connection by id, or by name (case-insensitive).
     pub fn find(&self, id_or_name: &str) -> Option<&ConnectionConfig> {
         self.list.connections.iter().find(|c| c.id == id_or_name).or_else(|| {

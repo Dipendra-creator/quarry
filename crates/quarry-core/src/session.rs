@@ -310,6 +310,29 @@ impl Session {
         Ok(rows.len().saturating_sub(1))
     }
 
+    /// The server's plan for `statement`. `analyze` runs it to report real
+    /// timings, so it is refused for statements that change data.
+    pub async fn explain(&self, statement: &str, analyze: bool) -> Result<QueryResult> {
+        let stmt = statement.trim().trim_end_matches(';');
+        if analyze && !sql::is_read_only(stmt) {
+            anyhow::bail!("EXPLAIN ANALYZE runs the statement, so only read-only statements can be analyzed");
+        }
+        let sql = match (self.kind(), analyze) {
+            (DriverKind::Postgres, false) => format!("EXPLAIN {stmt}"),
+            (DriverKind::Postgres, true) => format!("EXPLAIN (ANALYZE, BUFFERS) {stmt}"),
+            (DriverKind::MySql, false) => format!("EXPLAIN FORMAT=TREE {stmt}"),
+            (DriverKind::MySql, true) => format!("EXPLAIN ANALYZE {stmt}"),
+            (DriverKind::MariaDb, false) => format!("EXPLAIN {stmt}"),
+            (DriverKind::MariaDb, true) => format!("ANALYZE {stmt}"),
+            (DriverKind::Sqlite, _) => format!("EXPLAIN QUERY PLAN {stmt}"),
+        };
+        match self.execute(&sql).await {
+            // FORMAT=TREE needs MySQL 8.0.16; older servers get the table form.
+            Err(_) if self.kind() == DriverKind::MySql && !analyze => self.execute(&format!("EXPLAIN {stmt}")).await,
+            r => r,
+        }
+    }
+
     /// Server sessions and their running statements (Ctrl+.). The first
     /// column is the id `kill` takes.
     pub async fn processes(&self) -> Result<QueryResult> {
@@ -452,6 +475,8 @@ mod tests {
         assert_eq!(hits.len(), 1);
         assert_eq!(hits[0].rows[0][1], Value::Text("Linus".into()));
         assert_eq!(s.count(&t, &[]).await.unwrap(), 2);
+        assert!(!s.explain("select * from people where id = 1", false).await.unwrap().rows.is_empty());
+        assert!(s.explain("delete from people", true).await.is_err());
 
         let bad = s.run_script("select 1; select nope from nothing; select 2", None).await;
         assert_eq!(bad.len(), 2);

@@ -1,6 +1,6 @@
 [package]
 name = "quarry-ai"
-description = "AI tool layer for Quarry: every database feature as a JSON tool, plus an MCP server."
+description = "AI layer for Quarry: every database feature as a JSON tool, an MCP server, and the in-app assistant."
 version.workspace = true
 edition.workspace = true
 license.workspace = true
@@ -8,9 +8,12 @@ license.workspace = true
 [dependencies]
 quarry-core.workspace = true
 anyhow.workspace = true
+async-trait.workspace = true
 serde.workspace = true
 serde_json.workspace = true
-tokio.workspace = true
+tokio = { workspace = true, features = ["net", "process"] }
+reqwest = { version = "0.13", default-features = false, features = ["native-tls"] }
+uuid = { version = "1", features = ["v4"] }
 
 [[bin]]
 name = "quarry-mcp"

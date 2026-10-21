@@ -4,6 +4,7 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 mod actions;
+mod assistant;
 mod backup;
 mod completion;
 mod connection_form;
@@ -27,11 +28,20 @@ mod workspace;
 fn main() {
     gpui_kit::application().with_assets(gpui_kit::assets::AllAssets).run(|cx| {
         gpui_kit::init(cx);
-        if let Err(e) = state::AppState::init(cx) {
-            eprintln!("could not load settings: {e:#}");
-            cx.quit();
-            return;
-        }
+        let mut approvals = match state::AppState::init(cx) {
+            Ok(rx) => rx,
+            Err(e) => {
+                eprintln!("could not load settings: {e:#}");
+                cx.quit();
+                return;
+            }
+        };
+        cx.spawn(async move |cx| {
+            while let Some(request) = approvals.recv().await {
+                let _ = cx.update(|cx| assistant::ask_approval(request, cx));
+            }
+        })
+        .detach();
         let dark = state::AppState::get(cx).settings.appearance == state::Appearance::Dark;
         theme::apply(dark, None, cx);
         actions::bind(cx);

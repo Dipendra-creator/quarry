@@ -26,6 +26,8 @@ pub enum QueryEvent {
     Log(String),
     RowSelected(Option<RowSnapshot>),
     Changed,
+    /// A prompt for the AI assistant about this editor's query.
+    AskAi(String),
 }
 
 struct ResultTab {
@@ -108,19 +110,53 @@ impl QueryEditor {
     }
 
     /// Selection if any, else the statement under the cursor.
-    pub fn run_current(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+    fn current_sql(&self, cx: &App) -> Option<String> {
         let state = self.editor.read(cx);
         let selected = state.selected_value().to_string();
-        let script = if !selected.trim().is_empty() {
-            selected
-        } else {
-            let text = state.value().to_string();
-            match sql::statement_at(&text, state.cursor()) {
-                Some(s) => s.text,
-                None => return,
-            }
+        if !selected.trim().is_empty() {
+            return Some(selected);
+        }
+        sql::statement_at(&state.value(), state.cursor()).map(|s| s.text)
+    }
+
+    pub fn run_current(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if let Some(script) = self.current_sql(cx) {
+            self.run(script, window, cx);
+        }
+    }
+
+    /// Asks the assistant to explain, optimize or fix the current query.
+    fn ask_ai(&mut self, kind: &str, cx: &mut Context<Self>) {
+        let Some(sql) = self.current_sql(cx).filter(|s| !s.trim().is_empty()) else { return };
+        let sql = sql.trim();
+        let error = self.results.iter().find_map(|r| match &r.outcome.outcome {
+            Outcome::Error(e) => Some(e.clone()),
+            _ => None,
+        });
+        let prompt = match (kind, error) {
+            ("explain", _) => format!("Explain what this query does, step by step, and point out any mistakes:
+```sql
+{sql}
+```"),
+            ("optimize", _) => format!(
+                "Optimize this query. Read its plan with explain_query and the indexes of the tables it uses, then give me a faster version and any indexes worth adding, and say why they help:
+```sql
+{sql}
+```"
+            ),
+            (_, Some(e)) => format!("This query fails with:
+{e}
+
+Find the cause and give me a corrected query:
+```sql
+{sql}
+```"),
+            (_, None) => format!("Check this query for mistakes and give me a corrected version if it needs one:
+```sql
+{sql}
+```"),
         };
-        self.run(script, window, cx);
+        cx.emit(QueryEvent::AskAi(prompt));
     }
 
     pub fn run_all(&mut self, window: &mut Window, cx: &mut Context<Self>) {
@@ -275,11 +311,24 @@ impl QueryEditor {
             .child(
                 div()
                     .flex_1()
+                    .min_w(px(0.))
+                    .truncate()
                     .font_family(MONO)
                     .text_size(px(11.))
                     .text_color(p.secondary_text)
                     .child(format!("Line {}, Column {}", pos.line + 1, pos.character + 1)),
             )
+            .child(Button::new("q-ai").icon(IconName::Sparkles).label("Ask AI").xsmall().outline().dropdown_caret(true).dropdown_menu({
+                let this = this.clone();
+                move |menu, _, _| {
+                    [("Explain this query", "explain"), ("Optimize this query", "optimize"), ("Fix this query", "fix")].into_iter().fold(menu, |m, (label, kind)| {
+                        let t = this.clone();
+                        m.item(PopupMenuItem::new(label).on_click(move |_, _, cx| {
+                            let _ = t.update(cx, |e, cx| e.ask_ai(kind, cx));
+                        }))
+                    })
+                }
+            }))
             .child(Button::new("q-save").label("Save").xsmall().outline().dropdown_caret(true).dropdown_menu({
                 let this = this.clone();
                 move |menu, _, _| {

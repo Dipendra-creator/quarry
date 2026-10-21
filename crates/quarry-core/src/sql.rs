@@ -339,6 +339,10 @@ pub fn is_read_only(sql: &str) -> bool {
         && stmts.iter().all(|s| {
             let kw = first_keyword(&s.text);
             match kw.as_str() {
+                // EXPLAIN ANALYZE runs the statement it explains.
+                "EXPLAIN" if words(&s.text, false).iter().any(|w| w == "ANALYZE" || w == "ANALYSE") => !words(&s.text, false)
+                    .iter()
+                    .any(|w| matches!(w.as_str(), "INSERT" | "UPDATE" | "DELETE" | "MERGE" | "INTO" | "CREATE" | "DROP" | "ALTER" | "TRUNCATE")),
                 "SELECT" | "SHOW" | "EXPLAIN" | "DESCRIBE" | "DESC" | "VALUES" | "TABLE" => {
                     !top_level_words(&s.text).iter().any(|w| w == "INTO")
                 }
@@ -583,6 +587,9 @@ mod tests {
         assert!(!is_read_only("select 1; delete from t"));
         assert!(!is_read_only("select * into x from t"));
         assert!(!is_read_only("PRAGMA user_version = 3"));
+        assert!(is_read_only("explain analyze select * from t"));
+        assert!(!is_read_only("EXPLAIN ANALYZE DELETE FROM t"));
+        assert!(!is_read_only("explain (analyze, buffers) update t set a = 1"));
         assert!(!is_read_only(""));
     }
 

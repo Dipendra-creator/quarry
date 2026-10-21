@@ -229,5 +229,6 @@ pub fn placeholder(text: impl Into<SharedString>, cx: &App) -> Div {
         .text_size(UI_TEXT)
         .font_weight(FontWeight::SEMIBOLD)
         .text_color(cx.palette().secondary_text)
-        .child(text.into())
+        // Bounded, so long hints wrap in narrow panes.
+        .child(div().max_w_full().child(text.into()))
 }

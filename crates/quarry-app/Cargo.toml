@@ -14,6 +14,7 @@ embed-resource = "3"
 
 [dependencies]
 quarry-core.workspace = true
+quarry-ai.workspace = true
 anyhow.workspace = true
 serde.workspace = true
 serde_json.workspace = true

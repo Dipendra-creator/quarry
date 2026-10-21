@@ -7,12 +7,13 @@ use std::sync::Arc;
 use gpui_kit::assets::IconName;
 use gpui_kit::component::menu::{DropdownMenu as _, PopupMenuItem};
 use gpui_kit::component::button::ButtonVariants as _;
-use gpui_kit::component::{Sizable as _, TitleBar, h_flex, v_flex};
+use gpui_kit::component::{Sizable as _, TitleBar, h_flex, h_resizable, resizable_panel, v_flex};
 use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::*;
 use quarry_core::{Filter, Item, ItemKind, SafeMode, Session};
 
 use crate::actions::*;
+use crate::assistant::{AssistantEvent, AssistantPanel};
 use crate::data_view::{DataView, DataViewEvent, Mode, RowSnapshot};
 use crate::picker::{self, PickerItem};
 use crate::query_editor::{QueryEditor, QueryEvent};
@@ -183,7 +184,8 @@ impl WorkspaceWindow {
                     .child(
                         capsule(cx)
                             .child(capsule_button("refresh", IconName::RefreshCw, "Refresh workspace", true, cx, on(|w, window, cx| w.refresh(window, cx))))
-                            .child(capsule_button("anything", IconName::Command, "Open anything (Ctrl+P)", true, cx, on(|w, window, cx| w.open_anything(window, cx)))),
+                            .child(capsule_button("anything", IconName::Command, "Open anything (Ctrl+P)", true, cx, on(|w, window, cx| w.open_anything(window, cx))))
+                            .child(capsule_button("assistant", IconName::Sparkles, "AI assistant (Ctrl+L)", true, cx, on(|w, window, cx| w.toggle_assistant(window, cx)))),
                     )
                     .child(
                         capsule(cx)
@@ -272,6 +274,9 @@ pub struct ConnWorkspace {
     pub session: Arc<Session>,
     sidebar: Entity<Sidebar>,
     row_detail: Entity<RowDetail>,
+    /// Created the first time the pane opens; keeps its chat while hidden.
+    assistant: Option<Entity<AssistantPanel>>,
+    show_assistant: bool,
     tabs: Vec<Tab>,
     active_tab: Option<usize>,
     show_sidebar: bool,
@@ -294,6 +299,8 @@ impl ConnWorkspace {
             session,
             sidebar,
             row_detail,
+            assistant: None,
+            show_assistant: false,
             tabs: vec![],
             active_tab: None,
             show_sidebar: true,
@@ -408,6 +415,7 @@ impl ConnWorkspace {
             }
             QueryEvent::RowSelected(snap) => this.show_row(snap.clone(), None, window, cx),
             QueryEvent::Changed => cx.notify(),
+            QueryEvent::AskAi(prompt) => this.ask_ai(prompt.clone(), window, cx),
         }));
         self.tabs.push(Tab { content: TabContent::Query(editor.clone()), preview: false });
         self.activate(self.tabs.len() - 1, window, cx);
@@ -494,6 +502,46 @@ impl ConnWorkspace {
     fn toggle_console(&mut self, cx: &mut Context<Self>) {
         self.show_console = !self.show_console;
         cx.notify();
+    }
+
+    fn assistant(&mut self, window: &mut Window, cx: &mut Context<Self>) -> Entity<AssistantPanel> {
+        if let Some(a) = &self.assistant {
+            return a.clone();
+        }
+        let panel = cx.new(|cx| AssistantPanel::new(self.session.clone(), window, cx));
+        self._subs.push(cx.subscribe_in(&panel, window, |this, _, ev: &AssistantEvent, window, cx| match ev {
+            AssistantEvent::OpenSql { sql, run } => {
+                this.open_sql("AI Query".into(), sql.clone(), None, window, cx);
+                if let Some(q) = this.active_query().filter(|_| *run) {
+                    q.update(cx, |q, cx| q.run_all(window, cx));
+                }
+            }
+            AssistantEvent::Close => this.toggle_assistant(window, cx),
+        }));
+        self.assistant = Some(panel.clone());
+        panel
+    }
+
+    fn set_assistant(&mut self, show: bool, window: &mut Window, cx: &mut Context<Self>) -> Entity<AssistantPanel> {
+        self.show_assistant = show;
+        // The row detail pane makes room for the chat and comes back after it.
+        self.show_detail = !show && AppState::get(cx).settings.show_row_detail;
+        cx.notify();
+        self.assistant(window, cx)
+    }
+
+    fn toggle_assistant(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let panel = self.set_assistant(!self.show_assistant, window, cx);
+        if self.show_assistant {
+            let h = panel.read(cx).focus_handle(cx);
+            window.focus(&h, cx);
+        }
+    }
+
+    /// Opens the assistant and sends `prompt`.
+    pub fn ask_ai(&mut self, prompt: String, window: &mut Window, cx: &mut Context<Self>) {
+        let panel = self.set_assistant(true, window, cx);
+        panel.update(cx, |p, cx| p.send(prompt, window, cx));
     }
 
     fn set_safe_mode(&mut self, mode: SafeMode, cx: &mut Context<Self>) {
@@ -649,6 +697,7 @@ impl ConnWorkspace {
             PickerItem { label: "Open database".into(), detail: "Ctrl+K".into(), icon: IconName::Database },
             PickerItem { label: "Open SQL file...".into(), detail: "Ctrl+O".into(), icon: IconName::FolderOpen },
             PickerItem { label: "Processes".into(), detail: "Ctrl+.".into(), icon: IconName::Cpu },
+            PickerItem { label: "AI assistant".into(), detail: "Ctrl+L".into(), icon: IconName::Sparkles },
             PickerItem { label: "Reconnect".into(), detail: "Ctrl+Shift+R".into(), icon: IconName::RefreshCw },
             PickerItem { label: "Disconnect".into(), detail: "Shift+F5".into(), icon: IconName::Unplug },
             PickerItem { label: "Preferences".into(), detail: "Ctrl+,".into(), icon: IconName::Settings },
@@ -661,8 +710,9 @@ impl ConnWorkspace {
                 2 => w.database_list(window, cx),
                 3 => w.open_file(window, cx),
                 4 => crate::processes::open(w.session.clone(), window, cx),
-                5 => w.reconnect(window, cx),
-                6 => w.disconnect(window, cx),
+                5 => w.toggle_assistant(window, cx),
+                6 => w.reconnect(window, cx),
+                7 => w.disconnect(window, cx),
                 _ => crate::preferences::open(window, cx),
             });
         });
@@ -790,6 +840,21 @@ impl Render for ConnWorkspace {
             .text_size(px(16.))
             .into_any_element(),
         };
+        let main = h_flex()
+            .size_full()
+            .child(
+                v_flex()
+                    .flex_1()
+                    .min_w(px(0.))
+                    .h_full()
+                    .bg(p.window)
+                    .child(self.render_tab_bar(cx))
+                    .child(div().flex_1().overflow_hidden().child(content))
+                    .when(self.show_console, |d| d.child(self.render_console(cx))),
+            )
+            .when(self.show_detail, |d| {
+                d.child(crate::widgets::vline(cx)).child(div().w(px(260.)).h_full().flex_shrink_0().child(self.row_detail.clone()))
+            });
         h_flex()
             .key_context("Workspace")
             .track_focus(&self.focus_handle)
@@ -832,6 +897,7 @@ impl Render for ConnWorkspace {
             .on_action(cx.listener(|w, _: &DiscardChanges, window, cx| w.discard(window, cx)))
             .on_action(cx.listener(|w, _: &ToggleDetail, _, cx| w.toggle_detail(cx)))
             .on_action(cx.listener(|w, _: &ToggleConsole, _, cx| w.toggle_console(cx)))
+            .on_action(cx.listener(|w, _: &ToggleAssistant, window, cx| w.toggle_assistant(window, cx)))
             .on_action(cx.listener(|w, _: &ToggleSidebar, _, cx| w.toggle_sidebar(cx)))
             .on_action(cx.listener(|w, _: &Disconnect, window, cx| w.disconnect(window, cx)))
             .on_action(cx.listener(|w, _: &CloseTab, window, cx| {
@@ -854,19 +920,14 @@ impl Render for ConnWorkspace {
             .when(self.show_sidebar, |d| {
                 d.child(div().w(px(230.)).h_full().flex_shrink_0().child(self.sidebar.clone())).child(crate::widgets::vline(cx))
             })
-            .child(
-                v_flex()
-                    .flex_1()
-                    .min_w(px(0.))
-                    .h_full()
-                    .bg(p.window)
-                    .child(self.render_tab_bar(cx))
-                    .child(div().flex_1().overflow_hidden().child(content))
-                    .when(self.show_console, |d| d.child(self.render_console(cx))),
-            )
-            .when(self.show_detail, |d| {
-                d.child(crate::widgets::vline(cx)).child(div().w(px(260.)).h_full().flex_shrink_0().child(self.row_detail.clone()))
-            })
+            .child(div().flex_1().min_w(px(0.)).h_full().child(match self.assistant.clone().filter(|_| self.show_assistant) {
+                // Resizable: replies hold wide tables and long SQL.
+                Some(panel) => h_resizable("ai-split")
+                    .child(resizable_panel().child(main))
+                    .child(resizable_panel().size(px(440.)).size_range(px(320.)..px(1000.)).child(panel))
+                    .into_any_element(),
+                None => main.into_any_element(),
+            }))
     }
 }
 

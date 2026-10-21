@@ -2,11 +2,17 @@
 //!
 //! [`Toolbox::tools`] describes the tools (name, description, JSON schema);
 //! [`Toolbox::call`] runs one. The MCP server binary exposes them to any
-//! agent, and an in-app assistant can use the same `Toolbox` with the app's
-//! live [`SessionManager`].
+//! agent, and the in-app assistant ([`assistant`]) uses the same `Toolbox`
+//! with the app's live [`SessionManager`]. [`bridge`] lets an MCP server
+//! started outside the app reach those live connections.
 //!
-//! Write policy: a connection whose safe mode is anything but `Silent` is
-//! read-only for tools — the same switch that makes the UI ask first.
+//! Write policy: every statement that changes a database passes a
+//! [`WriteGate`]. The standalone MCP server's gate treats a connection whose
+//! safe mode is anything but `Silent` as read-only; the app's gate
+//! ([`ApprovalGate`]) asks the user.
+
+pub mod assistant;
+pub mod bridge;
 
 use std::sync::{Arc, Mutex};
 
@@ -16,10 +22,16 @@ use quarry_core::query::{BrowseRequest, Filter, Sort};
 use quarry_core::session::{Outcome, Session, SessionManager};
 use quarry_core::store::ConnectionStore;
 use quarry_core::{ConnectionConfig, DriverKind, Item, ItemKind, SafeMode, TableRef, Value, sql};
+use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value as Json, json};
+use tokio::sync::{mpsc, oneshot};
 
 const MAX_ROWS: usize = 1000;
 const DEFAULT_ROWS: usize = 100;
+
+/// Tools agents may not use while the app owns the connections: they would
+/// close or repoint a connection under the user's open tabs.
+pub const APP_HIDDEN: &[&str] = &["disconnect", "save_connection", "switch_database"];
 
 pub struct Tool {
     pub name: &'static str,
@@ -27,9 +39,94 @@ pub struct Tool {
     pub input_schema: Json,
 }
 
+/// Decides whether a tool may run statements that change a database.
+#[async_trait::async_trait]
+pub trait WriteGate: Send + Sync {
+    /// `sql` is what would run. An error refuses, with a message for the model.
+    async fn allow(&self, session: &Session, sql: &str) -> Result<()>;
+}
+
+/// Changes only on connections in Silent safe mode: the standalone MCP
+/// server's policy, since nobody is there to ask.
+pub struct SafeModeGate;
+
+#[async_trait::async_trait]
+impl WriteGate for SafeModeGate {
+    async fn allow(&self, s: &Session, _: &str) -> Result<()> {
+        if s.safe_mode() != SafeMode::Silent {
+            bail!(
+                "connection {:?} is in {:?} safe mode, so tools may only read. Ask the user to switch it to Silent mode to allow changes.",
+                s.config.display_name(),
+                s.safe_mode()
+            );
+        }
+        Ok(())
+    }
+}
+
+/// What the app's AI settings let agents change.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum WritePolicy {
+    /// Every change waits for the user's approval.
+    #[default]
+    Ask,
+    /// Changes run without asking, except on connections in a safe mode.
+    Allow,
+    /// Agents may only read.
+    ReadOnly,
+}
+
+/// A change waiting for the user's decision; send `true` to allow it.
+/// Dropping `reply` refuses.
+pub struct Approval {
+    pub connection: String,
+    pub sql: String,
+    pub reply: oneshot::Sender<bool>,
+}
+
+/// The app's gate: applies the [`WritePolicy`] and sends the changes that
+/// need approval to the UI.
+pub struct ApprovalGate {
+    policy: Mutex<WritePolicy>,
+    requests: mpsc::UnboundedSender<Approval>,
+}
+
+impl ApprovalGate {
+    pub fn new(policy: WritePolicy) -> (Arc<Self>, mpsc::UnboundedReceiver<Approval>) {
+        let (requests, rx) = mpsc::unbounded_channel();
+        (Arc::new(Self { policy: Mutex::new(policy), requests }), rx)
+    }
+
+    pub fn set_policy(&self, policy: WritePolicy) {
+        *self.policy.lock().unwrap() = policy;
+    }
+}
+
+#[async_trait::async_trait]
+impl WriteGate for ApprovalGate {
+    async fn allow(&self, s: &Session, sql: &str) -> Result<()> {
+        let policy = *self.policy.lock().unwrap();
+        match policy {
+            WritePolicy::ReadOnly => bail!("Quarry's AI settings allow reading only, so the change was not made."),
+            WritePolicy::Allow if s.safe_mode() == SafeMode::Silent => Ok(()),
+            _ => {
+                let (reply, answer) = oneshot::channel();
+                let request = Approval { connection: s.config.display_name(), sql: sql.to_string(), reply };
+                self.requests.send(request).map_err(|_| anyhow!("Quarry could not ask the user to approve the change"))?;
+                match answer.await {
+                    Ok(true) => Ok(()),
+                    _ => bail!("The user declined this change. Do not retry it unless they ask."),
+                }
+            }
+        }
+    }
+}
+
 pub struct Toolbox {
     store: Mutex<ConnectionStore>,
     sessions: Arc<SessionManager>,
+    gate: Arc<dyn WriteGate>,
 }
 
 fn conn_arg() -> Json {
@@ -67,7 +164,12 @@ fn filters_schema() -> Json {
 
 impl Toolbox {
     pub fn new(store: ConnectionStore, sessions: Arc<SessionManager>) -> Self {
-        Self { store: Mutex::new(store), sessions }
+        Self { store: Mutex::new(store), sessions, gate: Arc::new(SafeModeGate) }
+    }
+
+    pub fn with_gate(mut self, gate: Arc<dyn WriteGate>) -> Self {
+        self.gate = gate;
+        self
     }
 
     pub fn tools() -> Vec<Tool> {
@@ -175,8 +277,16 @@ impl Toolbox {
                 ),
             },
             Tool {
+                name: "explain_query",
+                description: "The database's execution plan for one query (EXPLAIN). Use it to find full scans and missing indexes before suggesting optimizations. analyze=true runs the query to report real row counts and timings; it works for read-only queries only.",
+                input_schema: object(
+                    json!({"connection": conn_arg(), "sql": {"type": "string"}, "analyze": {"type": "boolean"}}),
+                    &["connection", "sql"],
+                ),
+            },
+            Tool {
                 name: "run_sql",
-                description: "Run one or more SQL statements. Statements that modify data are refused on connections in a safe/alert mode.",
+                description: "Run one or more SQL statements. Statements that change data or structure need permission: they can be refused.",
                 input_schema: object(
                     json!({
                         "connection": conn_arg(), "sql": {"type": "string"},
@@ -317,6 +427,17 @@ impl Toolbox {
                     .await?;
                 Ok(serde_json::to_value(hits)?)
             }
+            "explain_query" => {
+                let s = self.session(&a).await?;
+                let analyze = a.0.get("analyze").and_then(Json::as_bool).unwrap_or(false);
+                let r = s.explain(a.str("sql")?, analyze).await?;
+                // PostgreSQL and MySQL return the plan as lines of one column.
+                if r.columns.len() == 1 {
+                    let lines: Vec<String> = r.rows.iter().map(|row| row[0].display()).collect();
+                    return Ok(json!({"plan": lines.join("\n")}));
+                }
+                Ok(json!({"plan": r.rows_as_objects(MAX_ROWS)}))
+            }
             "run_sql" => self.run_sql(&a).await,
             "insert_row" => {
                 let values = a.row("values")?;
@@ -350,21 +471,23 @@ impl Toolbox {
                 let table = self.table(&s, &a)?;
                 let changes: Vec<quarry_core::alter::StructureChange> =
                     a.parse("changes")?.ok_or_else(|| anyhow!("missing array argument \"changes\""))?;
+                let statements = s.dialect().structure_sql(&table, &changes)?;
                 if a.0.get("dry_run").and_then(Json::as_bool).unwrap_or(false) {
-                    return Ok(json!({"sql": s.dialect().structure_sql(&table, &changes)?}));
+                    return Ok(json!({"sql": statements}));
                 }
-                ensure_writable(&s)?;
+                self.gate.allow(&s, &statements.join("\n")).await?;
                 Ok(json!({"executed": s.apply_structure(&table, &changes).await?}))
             }
             "import_csv" => {
                 let s = self.session(&a).await?;
-                ensure_writable(&s)?;
                 let table = self.table(&s, &a)?;
                 let csv = match (a.opt_str("csv"), a.opt_str("path")) {
                     (Some(text), _) => text.to_string(),
                     (None, Some(path)) => std::fs::read_to_string(path).with_context(|| format!("could not read {path}"))?,
                     (None, None) => bail!("give either csv or path"),
                 };
+                let rows = csv.lines().count().saturating_sub(1);
+                self.gate.allow(&s, &format!("-- insert {rows} CSV rows into {}", table.qualified())).await?;
                 let delimiter = a.opt_str("delimiter").and_then(|d| d.chars().next()).unwrap_or(',');
                 Ok(json!({"imported": s.import_csv(&table, &csv, delimiter, true).await?}))
             }
@@ -395,18 +518,25 @@ impl Toolbox {
     }
 
     fn list_connections(&self) -> Json {
-        let store = self.store.lock().unwrap();
+        let mut store = self.store.lock().unwrap();
+        let _ = store.reload();
+        let live = self.sessions.all();
+        // Open connections first, including ones never saved.
+        let unsaved = live.iter().filter(|s| store.find(&s.config.id).is_none()).map(|s| &s.config);
         Json::Array(
-            store
-                .list
-                .connections
-                .iter()
+            unsaved
+                .chain(store.list.connections.iter())
                 .map(|c| {
+                    let session = live.iter().find(|s| s.config.id == c.id);
                     json!({
                         "id": c.id, "name": c.display_name(), "driver": c.driver, "host": c.host,
-                        "database": if c.driver.is_file_based() { &c.file_path } else { &c.database },
-                        "tag": c.tag, "safe_mode": c.safe_mode,
-                        "connected": self.sessions.get(&c.id).is_some()
+                        "database": match session {
+                            Some(s) => s.database(),
+                            None if c.driver.is_file_based() => c.file_path.clone(),
+                            None => c.database.clone(),
+                        },
+                        "tag": c.tag, "safe_mode": session.map_or(c.safe_mode, |s| s.safe_mode()),
+                        "connected": session.is_some()
                     })
                 })
                 .collect(),
@@ -446,15 +576,29 @@ impl Toolbox {
     }
 
     fn config(&self, id_or_name: &str) -> Result<ConnectionConfig> {
-        self.store
-            .lock()
-            .unwrap()
+        if let Some(s) = self.live(id_or_name) {
+            return Ok(s.config.clone());
+        }
+        let mut store = self.store.lock().unwrap();
+        let _ = store.reload();
+        store
             .resolve(id_or_name)
             .ok_or_else(|| anyhow!("no saved connection named or with id {id_or_name:?}; see list_connections"))
     }
 
+    /// An open connection, by id or name.
+    fn live(&self, id_or_name: &str) -> Option<Arc<Session>> {
+        self.sessions.get(id_or_name).or_else(|| {
+            self.sessions.all().into_iter().find(|s| s.config.display_name().eq_ignore_ascii_case(id_or_name))
+        })
+    }
+
     async fn session(&self, a: &Args) -> Result<Arc<Session>> {
-        let config = self.config(a.str("connection")?)?;
+        let key = a.str("connection")?;
+        if let Some(s) = self.live(key) {
+            return Ok(s);
+        }
+        let config = self.config(key)?;
         self.sessions.connect(config).await
     }
 
@@ -481,7 +625,7 @@ impl Toolbox {
         let s = self.session(a).await?;
         let script = a.str("sql")?;
         if !sql::is_read_only(script) {
-            ensure_writable(&s)?;
+            self.gate.allow(&s, script).await?;
         }
         let limit = a.opt_u64("limit").map_or(DEFAULT_ROWS, |l| l as usize).min(MAX_ROWS);
         let outcomes = s.run_script(script, Some(limit as u32)).await;
@@ -513,23 +657,13 @@ impl Toolbox {
         let table = self.table(&s, a)?;
         let pk = s.structure(&table).await?.primary_key();
         let (changes, key_kind) = build(&pk)?;
+        let statements = s.changes_sql(&table, &changes, key_kind);
         if a.0.get("dry_run").and_then(Json::as_bool).unwrap_or(false) {
-            return Ok(json!({"sql": s.changes_sql(&table, &changes, key_kind)}));
+            return Ok(json!({"sql": statements}));
         }
-        ensure_writable(&s)?;
+        self.gate.allow(&s, &statements.join("\n")).await?;
         Ok(json!({"executed": s.apply_changes(&table, &changes, key_kind).await?}))
     }
-}
-
-fn ensure_writable(s: &Session) -> Result<()> {
-    if s.safe_mode() != SafeMode::Silent {
-        bail!(
-            "connection {:?} is in {:?} safe mode, so tools may only read. Ask the user to switch it to Silent mode to allow changes.",
-            s.config.display_name(),
-            s.safe_mode()
-        );
-    }
-    Ok(())
 }
 
 fn check_key(key: &ColumnValues, pk: &[String]) -> Result<()> {
@@ -655,6 +789,32 @@ book,12
         assert!(tb.call("run_sql", json!({"connection": "Shop", "sql": "delete from items"})).await.is_err());
         assert!(tb.call("run_sql", json!({"connection": "Shop", "sql": "select * from items"})).await.is_ok());
         assert!(tb.call("delete_rows", json!({"connection": "Shop", "table": "items", "keys": [{"id": 1}]})).await.is_err());
+
+        // The app serves its toolbox over the bridge, and its gate asks the user.
+        let (gate, mut asks) = ApprovalGate::new(WritePolicy::Ask);
+        let store = ConnectionStore::load_from(dir.join("connections.json")).unwrap();
+        let app = Arc::new(Toolbox::new(store, Arc::new(SessionManager::default())).with_gate(gate.clone()));
+        bridge::serve(app).await.unwrap();
+        let mut client = bridge::BridgeClient::connect(&bridge::info_path()).await.unwrap();
+        let answers = tokio::spawn(async move {
+            let mut asked = vec![];
+            for answer in [false, true] {
+                let a = asks.recv().await.unwrap();
+                asked.push(a.sql.clone());
+                a.reply.send(answer).unwrap();
+            }
+            asked
+        });
+        let delete = json!({"connection": "Shop", "sql": "delete from items where id = 2"});
+        let refused = client.call("run_sql", delete.clone()).await.unwrap_err();
+        assert!(refused.to_string().contains("declined"), "{refused}");
+        assert_eq!(client.call("run_sql", delete.clone()).await.unwrap()[0]["rows_affected"], 1);
+        assert_eq!(answers.await.unwrap(), ["delete from items where id = 2"; 2]);
+        gate.set_policy(WritePolicy::ReadOnly);
+        assert!(client.call("run_sql", delete).await.is_err());
+        assert!(client.call("disconnect", json!({"connection": "Shop"})).await.is_err());
+        let plan = client.call("explain_query", json!({"connection": "Shop", "sql": "select * from items where price > 1"})).await.unwrap();
+        assert!(plan["plan"].as_array().is_some_and(|p| !p.is_empty()), "{plan}");
         let _ = std::fs::remove_dir_all(dir);
     }
 

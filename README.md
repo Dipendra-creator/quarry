@@ -17,7 +17,8 @@ AI agents through a tool API and an MCP server.
 | SQL editor | Syntax highlighting, autocomplete (keywords, tables, columns, `alias.column`), run current statement or all (Ctrl+Enter / Ctrl+Shift+Enter), automatic LIMIT, Beautify/Uglify, a result tab per statement, messages and errors, export, save to the Queries list or to a `.sql` file, open `.sql` files |
 | Safety | Five safe-mode levels, as in the original. Silent sends queries directly. Alert asks before sending. Safe requires typing the connection name. The "except read" variants skip the prompt for SELECT/SHOW/EXPLAIN. |
 | Other | Light and dark themes, preferences, backup and restore (pg_dump/mysqldump/psql/mysql from PATH, SQLite built in) |
-| AI | 23 JSON tools covering connections, schema, reading, searching, SQL, row edits, structure edits, import, history and saved queries, plus the `quarry-mcp` stdio server |
+| AI assistant | A chat pane per connection (Ctrl+L) that reads the schema, views, functions and data, answers questions, writes and explains SQL, and optimizes queries from their plans. Runs on Claude Code, Codex, the Anthropic API or the OpenAI API (Preferences → AI). SQL in replies opens in the editor with one click; the SQL editor's **Ask AI** menu explains, optimizes or fixes the current query. Changes need your approval. |
+| AI tools | 24 JSON tools covering connections, schema, reading, searching, query plans, SQL, row edits, structure edits, import, history and saved queries, plus the `quarry-mcp` stdio server, which works on the app's open connections while it runs |
 
 The roadmap at the end lists what TablePlus has that Quarry does not have yet.
 
@@ -87,23 +88,26 @@ name `quarry`.
 | Ctrl+Alt+C | Toggle the console log |
 | Ctrl+0 | Toggle the sidebar |
 | Ctrl+. | Processes (cancel/kill) |
+| Ctrl+L | AI assistant |
 | Ctrl+O / Ctrl+Shift+S | Open a `.sql` file / save the editor to a file |
 | Ctrl+, | Preferences |
 
 ## AI access
 
 Everything the UI does goes through `quarry_core::session::Session`. The `quarry-ai`
-crate exposes the same operations as tools with JSON schemas, and `quarry-mcp` serves
-them over the Model Context Protocol. To register the server with Claude Code:
+crate exposes the same operations as tools with JSON schemas. The in-app assistant uses
+them directly, and `quarry-mcp` serves them over the Model Context Protocol. To register the
+server with Claude Code (Preferences → AI shows this command for your install):
 
 ```sh
-claude mcp add quarry -- C:/path/to/quarry/target/release/quarry-mcp.exe
+claude mcp add quarry -- "C:\Program Files\Quarry\quarry-mcp.exe"
 ```
 
-The tools work on the connections saved in the app. A connection whose safe mode is
-anything other than Silent is read-only for tools: SQL that writes, row edits, structure
-edits and imports are refused. See [docs/AI.md](docs/AI.md) for the tool list and for how
-to build an in-app assistant on the same API.
+While the app is open, `quarry-mcp` works on the app's open connections, and every change
+an agent makes waits for your approval in the app (Preferences → AI → AI changes: Ask
+first, Allow or Read only). Without the app it opens saved connections itself, and treats
+any connection in a safe mode other than Silent as read-only. See [docs/AI.md](docs/AI.md)
+for the backends, the tool list and the write policy.
 
 ## Tests
 
@@ -164,7 +168,6 @@ Features TablePlus has that Quarry does not have yet:
 - Create Table and Clone Table dialogs (today: SQL templates from the sidebar "+" menu)
 - Import of SQL dumps and JSON through dialogs (today: open a `.sql` file and run it)
 - Customizable keymap, plugins, more UI languages
-- An in-app AI assistant pane built on `quarry-ai`
 
 ## License
 
