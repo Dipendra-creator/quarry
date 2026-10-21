@@ -7,6 +7,16 @@
 #ifndef BinDir
   #define BinDir "..\..\target\dist\release"
 #endif
+#ifndef AppArch
+  #define AppArch "x64"
+#endif
+#if AppArch == "arm64"
+  #define SetupArch "arm64"
+  #define MinimumWindows "10.0.22000"
+#else
+  #define SetupArch "x64compatible"
+  #define MinimumWindows "10.0.17763"
+#endif
 
 [Setup]
 ; Never change AppId: upgrades and uninstall find earlier installs by it.
@@ -21,20 +31,20 @@ DefaultGroupName=Quarry
 DisableProgramGroupPage=yes
 LicenseFile=..\..\LICENSE
 OutputDir=..\..\target\dist\installer
-OutputBaseFilename=QuarrySetup-{#AppVersion}-x64
+OutputBaseFilename=QuarrySetup-{#AppVersion}-{#AppArch}
 SetupIconFile=..\..\crates\quarry-app\resources\quarry.ico
 UninstallDisplayIcon={app}\quarry.exe
 UninstallDisplayName=Quarry
 Compression=lzma2/ultra64
 SolidCompression=yes
 WizardStyle=modern
-ArchitecturesAllowed=x64compatible
-ArchitecturesInstallIn64BitMode=x64compatible
+ArchitecturesAllowed={#SetupArch}
+ArchitecturesInstallIn64BitMode={#SetupArch}
 ; Installs for the current user without admin rights; the dialog offers all users.
 PrivilegesRequired=lowest
 PrivilegesRequiredOverridesAllowed=dialog
 ; Windows 10 1809 or later (DirectComposition and system ICU used by GPUI).
-MinVersion=10.0.17763
+MinVersion={#MinimumWindows}
 CloseApplications=yes
 
 [Tasks]
@@ -49,8 +59,8 @@ Source: "..\..\docs\AI.md"; DestDir: "{app}\docs"
 Source: "..\..\docs\ARCHITECTURE.md"; DestDir: "{app}\docs"
 
 [Icons]
-Name: "{autoprograms}\Quarry"; Filename: "{app}\quarry.exe"
-Name: "{autodesktop}\Quarry"; Filename: "{app}\quarry.exe"; Tasks: desktopicon
+Name: "{autoprograms}\Quarry"; Filename: "{app}\quarry.exe"; AppUserModelID: "io.github.dipendra-creator.quarry"
+Name: "{autodesktop}\Quarry"; Filename: "{app}\quarry.exe"; Tasks: desktopicon; AppUserModelID: "io.github.dipendra-creator.quarry"
 
 [Run]
 Filename: "{app}\quarry.exe"; Description: "{cm:LaunchProgram,Quarry}"; Flags: nowait postinstall skipifsilent

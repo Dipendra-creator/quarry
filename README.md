@@ -22,18 +22,42 @@ AI agents through a tool API and an MCP server.
 
 The roadmap at the end lists what TablePlus has that Quarry does not have yet.
 
-## Install (Windows)
+## Install
 
-Download `QuarrySetup-<version>-x64.exe` from the
-[latest release](https://github.com/Dipendra-creator/quarry/releases/latest) and run it.
-It installs for the current user without admin
-rights; the first page also offers "install for all users". It adds Start menu and
-optional desktop shortcuts and an uninstaller, and installs `quarry-mcp.exe` next to
-the app. Uninstalling keeps your saved connections and passwords.
+Get the matching download from the [latest release](https://github.com/Dipendra-creator/quarry/releases/latest).
+`SHA256SUMS.txt` covers every package. Both the desktop app and the MCP server are included.
 
-The release also includes `Quarry-<version>-windows-x64.zip` for portable use. Extract
-it and run `quarry.exe`; `quarry-mcp.exe` is included alongside it. `SHA256SUMS.txt`
-contains SHA-256 checksums for the installer and ZIP.
+| Platform | CPU | Packages | Build baseline |
+| --- | --- | --- | --- |
+| Windows | x64 (Intel/AMD) | Installer EXE, portable ZIP | Windows 10 1809+ |
+| Windows | ARM64 | Installer EXE, portable ZIP | Windows 11 |
+| macOS | Intel x64 | DMG, zipped Quarry.app | macOS 12+ deployment target; tested on macOS 15 |
+| macOS | Apple silicon ARM64 | DMG, zipped Quarry.app | macOS 12+ deployment target; tested on macOS 15 |
+| Linux | x64 | DEB, tar.gz | Ubuntu 22.04 / glibc 2.35 |
+| Linux | ARM64 | DEB, tar.gz | Ubuntu 22.04 / glibc 2.35 |
+
+**Windows:** run `QuarrySetup-<version>-<arch>.exe`. It installs for the current user
+without admin rights, or for all users if selected. It adds Start menu and optional
+desktop shortcuts and an uninstaller. For portable use, extract the ZIP and run
+`quarry.exe`. Uninstalling keeps saved connections and passwords.
+
+**macOS:** open the matching DMG and drag Quarry to Applications, or extract the app
+ZIP. These builds are ad hoc signed and **not Apple notarized**. If macOS blocks a
+trusted download, use System Settings → Privacy & Security → Open Anyway
+([Apple's instructions](https://support.apple.com/en-us/102445)).
+The MCP executable is `/Applications/Quarry.app/Contents/MacOS/quarry-mcp`.
+
+**Linux:** on Ubuntu/Debian-compatible systems, install the matching DEB with apt:
+
+```sh
+sudo apt install ./Quarry-0.1.2-linux-x64.deb
+```
+
+Or extract the tarball and run its `quarry` executable. Portable builds use the host's
+graphics and TLS libraries; on Ubuntu 22.04, install `libfontconfig1 libfreetype6
+libssl3 libvulkan1 libwayland-client0 libx11-xcb1 libxkbcommon-x11-0` if needed.
+The DEB declares its shared-library dependencies automatically. A working X11 or
+Wayland session and Vulkan-capable graphics driver are required.
 
 To build the installer yourself, install [Inno Setup 6](https://jrsoftware.org/isinfo.php)
 (`winget install JRSoftware.InnoSetup`) and run:
@@ -127,21 +151,24 @@ cargo test -p quarry-core --test live
 
 ## Releasing
 
-The [Release workflow](.github/workflows/release.yml) runs when a version tag is pushed.
+The [Release workflow](.github/workflows/release.yml) builds and tests all six desktop
+targets on pushes to main. It publishes all packages together when a version tag is pushed.
 Update the workspace version in `Cargo.toml`, run `cargo check` to refresh `Cargo.lock`,
 and commit the changes before tagging. For example, after updating the version to
-`0.1.1`:
+`0.1.3`:
 
 ```sh
-git tag -a v0.1.1 -m "Quarry v0.1.1"
+git tag -a v0.1.3 -m "Quarry v0.1.3"
 git push origin main
-git push origin v0.1.1
+git push origin v0.1.3
 ```
 
 The workflow checks the tag against the workspace version, runs the unit and SQLite
-tests, builds the Windows installer and portable ZIP, and publishes a release with
-SHA-256 checksums. You can also run it manually from GitHub Actions with an existing
-version tag. No extra repository secrets are required.
+tests, verifies native executables and MCP startup, and publishes the 12 packages
+with SHA-256 checksums only after all six targets pass. A branch run builds without
+publishing; a tag run publishes. No extra secrets are required for these unsigned/ad
+hoc signed packages. See [docs/RELEASING.md](docs/RELEASING.md) for native packaging
+commands and the signing status.
 
 ## Project layout
 

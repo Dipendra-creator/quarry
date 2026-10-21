@@ -1,0 +1,21 @@
+Ask your database a question. See the SQL. Approve the change.
+
+I'm releasing Quarry: an open-source, native database client with an AI assistant inside the workspace.
+
+It can inspect the schema, explain a query, read its execution plan, and help write SQL. Database changes can wait for your approval before they run.
+
+What's included:
+• PostgreSQL, MySQL, MariaDB and SQLite
+• Windows, macOS and Linux builds for x64 and ARM64
+• A SQL editor, data grid, schema tools and SSH connections
+• Claude Code, Codex, Anthropic and OpenAI backends
+• MCP tools that work with the app's open connections
+
+Built with Rust and GPUI. MIT licensed. Bring your own AI login or API credentials.
+
+Download it, inspect the code, or try it on a small test database:
+https://github.com/Dipendra-creator/quarry
+
+I'm looking for feedback from people who work with databases every day. Which workflow would you test first?
+
+#OpenSource #Rust #Databases

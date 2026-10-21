@@ -2,59 +2,65 @@ name: Release
 
 on:
   push:
-    tags:
-      - "v[0-9]*"
+    branches: [main]
+    tags: ["v[0-9]*"]
   workflow_dispatch:
-    inputs:
-      tag:
-        description: Existing version tag to release (for example, v0.1.0)
-        required: true
-        type: string
 
 permissions:
   contents: read
 
 concurrency:
-  group: release-${{ inputs.tag || github.ref_name }}
-  cancel-in-progress: false
+  group: release-${{ github.ref }}
+  cancel-in-progress: ${{ github.ref_type != 'tag' }}
 
 jobs:
-  windows:
-    name: Windows x64
-    runs-on: windows-2022
+  build:
+    name: ${{ matrix.platform }} ${{ matrix.arch }}
+    runs-on: ${{ matrix.runner }}
     timeout-minutes: 90
-    permissions:
-      contents: write
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { platform: windows, arch: x64, runner: windows-2022, target: x86_64-pc-windows-msvc }
+          - { platform: windows, arch: arm64, runner: windows-11-arm, target: aarch64-pc-windows-msvc }
+          - { platform: macos, arch: x64, runner: macos-15-intel, target: x86_64-apple-darwin }
+          - { platform: macos, arch: arm64, runner: macos-15, target: aarch64-apple-darwin }
+          - { platform: linux, arch: x64, runner: ubuntu-22.04, target: x86_64-unknown-linux-gnu }
+          - { platform: linux, arch: arm64, runner: ubuntu-22.04-arm, target: aarch64-unknown-linux-gnu }
     defaults:
       run:
-        shell: pwsh
+        shell: bash
     env:
-      RELEASE_TAG: ${{ inputs.tag || github.ref_name }}
       CARGO_TERM_COLOR: always
       CARGO_INCREMENTAL: "0"
-      RUSTFLAGS: -C target-feature=+crt-static
+      CARGO_BUILD_JOBS: "2"
+      RUSTFLAGS: ${{ matrix.platform == 'windows' && '-C target-feature=+crt-static' || '' }}
+      MACOSX_DEPLOYMENT_TARGET: "12.0"
+      QUARRY_PYTHON: ${{ matrix.platform == 'windows' && 'python' || 'python3' }}
 
     steps:
-      - name: Check out the release tag
+      - name: Check out source
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
-          ref: refs/tags/${{ inputs.tag || github.ref_name }}
           persist-credentials: false
 
-      - name: Validate the release version
-        run: |
-          $version = (Select-String -Path Cargo.toml -Pattern '^version = "([^"]+)"').Matches[0].Groups[1].Value
-          if ($env:RELEASE_TAG -cne "v$version") {
-            throw "Tag $env:RELEASE_TAG does not match Cargo.toml version v$version"
-          }
-          "RELEASE_VERSION=$version" >> $env:GITHUB_ENV
+      - name: Validate version
+        run: '"$QUARRY_PYTHON" packaging/release.py version --github-env'
 
       - name: Install Rust 1.98.0
         run: |
-          rustup toolchain install 1.98.0 --profile minimal --no-self-update
-          if ($LASTEXITCODE) { throw 'Rust installation failed' }
-          rustup default 1.98.0
-          if ($LASTEXITCODE) { throw 'Rust toolchain selection failed' }
+          rustup toolchain install "1.98.0-${{ matrix.target }}" --profile minimal --no-self-update
+          rustup default "1.98.0-${{ matrix.target }}"
+
+      - name: Install Linux build dependencies
+        if: matrix.platform == 'linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y build-essential clang cmake pkg-config dpkg-dev \
+            libssl-dev libasound2-dev libfontconfig1-dev libfreetype6-dev \
+            libglib2.0-dev libwayland-dev libx11-xcb-dev libxkbcommon-x11-dev \
+            libxcb-shape0-dev libxcb-xfixes0-dev libvulkan-dev mesa-vulkan-drivers
 
       - name: Cache Rust dependencies
         uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
@@ -65,42 +71,67 @@ jobs:
       - name: Run unit and SQLite tests
         run: cargo test --workspace --release --locked --target-dir target/dist
 
-      - name: Build the Windows installer
-        run: ./packaging/windows/build-installer.ps1
+      - name: Build Windows installer
+        if: matrix.platform == 'windows'
+        shell: pwsh
+        run: ./packaging/windows/build-installer.ps1 -Architecture '${{ matrix.arch }}'
 
-      - name: Package downloads and checksums
+      - name: Build macOS and Linux applications
+        if: matrix.platform != 'windows'
+        run: cargo build --release --locked -p quarry-app -p quarry-ai --target-dir target/dist
+
+      - name: Verify native binaries and MCP startup
+        run: '"$QUARRY_PYTHON" packaging/verify.py --platform "${{ matrix.platform }}" --arch "${{ matrix.arch }}"'
+
+      - name: Package native applications
+        run: '"$QUARRY_PYTHON" packaging/release.py package --platform "${{ matrix.platform }}" --arch "${{ matrix.arch }}"'
+
+      - name: Upload verified downloads
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: quarry-${{ matrix.platform }}-${{ matrix.arch }}
+          path: target/downloads/*
+          if-no-files-found: error
+          compression-level: 0
+          retention-days: 7
+
+  publish:
+    name: Publish all desktop builds
+    needs: build
+    if: github.ref_type == 'tag'
+    runs-on: ubuntu-22.04
+    permissions:
+      contents: write
+    defaults:
+      run:
+        shell: bash
+    env:
+      GH_TOKEN: ${{ github.token }}
+      GH_REPO: ${{ github.repository }}
+      RELEASE_TAG: ${{ github.ref_name }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Download all six platform artifacts
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          pattern: quarry-*
+          merge-multiple: true
+          path: target/downloads
+
+      - name: Validate complete release and generate checksums
+        run: python3 packaging/release.py checksums
+
+      - name: Publish complete GitHub release
         run: |
-          $version = $env:RELEASE_VERSION
-          $downloads = New-Item -ItemType Directory -Force -Path target/downloads
-          Copy-Item -LiteralPath "target/dist/installer/QuarrySetup-$version-x64.exe" -Destination $downloads
-          $portable = New-Item -ItemType Directory -Force -Path "target/Quarry-$version-windows-x64"
-          Copy-Item -LiteralPath target/dist/release/quarry.exe, target/dist/release/quarry-mcp.exe, LICENSE, README.md -Destination $portable
-          Copy-Item -LiteralPath docs -Destination $portable -Recurse
-          Compress-Archive -Path "$portable/*" -DestinationPath "$downloads/Quarry-$version-windows-x64.zip"
-          Get-ChildItem -LiteralPath $downloads -File | Sort-Object Name | ForEach-Object {
-            $hash = (Get-FileHash -LiteralPath $_.FullName -Algorithm SHA256).Hash.ToLowerInvariant()
-            "$hash  $($_.Name)"
-          } | Set-Content -LiteralPath "$downloads/SHA256SUMS.txt" -Encoding ascii
-
-      - name: Publish the GitHub release
-        env:
-          GH_TOKEN: ${{ github.token }}
-          GH_REPO: ${{ github.repository }}
-        run: |
-          $version = $env:RELEASE_VERSION
-          $notes = @"
-          Native database client for Windows, built with Rust and GPUI. Supports PostgreSQL, MySQL, MariaDB, SQLite, and AI tools through the bundled MCP server.
-
-          ## Downloads
-          - **QuarrySetup-$version-x64.exe**: Windows installer (recommended).
-          - **Quarry-$version-windows-x64.zip**: portable app, MCP server, and documentation.
-          - **SHA256SUMS.txt**: SHA-256 checksums for both downloads.
-
-          Requires Windows 10 version 1809 or later, x64. Backup and restore of server databases also require the corresponding database command-line tools on PATH.
-          "@
-          $notes | Set-Content -LiteralPath target/release-notes.md -Encoding utf8
-          $assets = (Get-ChildItem -LiteralPath target/downloads -File).FullName
-          gh release create $env:RELEASE_TAG @assets --verify-tag --draft --title "Quarry $env:RELEASE_TAG" --notes-file target/release-notes.md --generate-notes
-          if ($LASTEXITCODE) { throw 'Release creation or asset upload failed' }
-          gh release edit $env:RELEASE_TAG --draft=false --latest
-          if ($LASTEXITCODE) { throw 'Release publication failed' }
+          if gh release view "$RELEASE_TAG" --json isDraft > target/existing-release.json; then
+            python3 -c 'import json; assert json.load(open("target/existing-release.json"))["isDraft"], "This release is already public; existing downloads will not be replaced"'
+            gh release upload "$RELEASE_TAG" target/downloads/* --clobber
+            gh release edit "$RELEASE_TAG" --notes-file packaging/release-notes.md
+          else
+            gh release create "$RELEASE_TAG" target/downloads/* --verify-tag --draft \
+              --title "Quarry $RELEASE_TAG" --notes-file packaging/release-notes.md --generate-notes
+          fi
+          gh release edit "$RELEASE_TAG" --draft=false --latest

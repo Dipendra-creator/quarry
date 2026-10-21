@@ -1,7 +1,7 @@
 //! Quarry desktop app: an open-source database client in the style of TablePlus.
 
 // Release builds are GUI apps; debug builds keep a console for logs.
-#![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
+#![cfg_attr(all(windows, not(debug_assertions)), windows_subsystem = "windows")]
 
 mod actions;
 mod assistant;
@@ -27,6 +27,7 @@ mod workspace;
 
 fn main() {
     gpui_kit::application().with_assets(gpui_kit::assets::AllAssets).run(|cx| {
+        cx.set_app_identity("io.github.dipendra-creator.quarry", "Quarry");
         gpui_kit::init(cx);
         let mut approvals = match state::AppState::init(cx) {
             Ok(rx) => rx,
