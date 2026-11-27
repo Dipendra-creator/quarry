@@ -73,18 +73,15 @@ async fn tokio_blocking<T: Send + 'static>(f: impl FnOnce() -> Result<T> + Send 
     tokio::task::spawn_blocking(f).await?
 }
 
+/// A database client tool on the user's PATH (the login shell's, which
+/// includes Homebrew and the like even when Quarry was opened from Finder).
 fn tool(name: &str) -> Result<PathBuf> {
-    let exe = if cfg!(windows) { format!("{name}.exe") } else { name.to_string() };
-    std::env::var_os("PATH")
-        .into_iter()
-        .flat_map(|p| std::env::split_paths(&p).collect::<Vec<_>>())
-        .map(|d| d.join(&exe))
-        .find(|p| p.is_file())
+    quarry_core::shell_env::find_program(name)
         .with_context(|| format!("{name} was not found on PATH. Install the database client tools to use backup and restore."))
 }
 
 fn run(mut cmd: Command) -> Result<()> {
-    let out = cmd.output()?;
+    let out = cmd.env("PATH", quarry_core::shell_env::user_path()).output()?;
     if !out.status.success() {
         bail!("{}", String::from_utf8_lossy(&out.stderr).trim());
     }

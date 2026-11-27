@@ -145,30 +145,26 @@ pub(super) async fn version(settings: &AiSettings) -> Result<String> {
         Provider::Codex => program(&settings.codex_path, "codex"),
         _ => program(&settings.claude_path, "claude"),
     };
-    let out = command(exe.clone()).arg("--version").stdin(Stdio::null()).output().await.with_context(|| format!("could not start {}", exe.display()))?;
+    let out = command(exe.clone()).arg("--version").stdin(Stdio::null()).output().await.with_context(|| not_found(&exe))?;
     if !out.status.success() {
         bail!("{}", String::from_utf8_lossy(&out.stderr).trim());
     }
     Ok(format!("{} ({})", String::from_utf8_lossy(&out.stdout).trim(), exe.display()))
 }
 
-/// The executable as configured, else the first match on PATH.
+/// The executable as configured, else the first match on the user's PATH
+/// (the login shell's, not the bare one a Finder-launched app gets).
 fn program(configured: &str, name: &str) -> PathBuf {
     if !configured.trim().is_empty() {
         return PathBuf::from(configured.trim());
     }
-    let exts: &[&str] = if cfg!(windows) { &["exe", "cmd", "bat"] } else { &[""] };
-    std::env::var_os("PATH")
-        .map(|p| std::env::split_paths(&p).collect::<Vec<_>>())
-        .unwrap_or_default()
-        .into_iter()
-        .flat_map(|dir| exts.iter().map(move |e| dir.join(name).with_extension(e)))
-        .find(|p| p.is_file())
-        .unwrap_or_else(|| name.into())
+    quarry_core::shell_env::find_program(name).unwrap_or_else(|| name.into())
 }
 
 fn command(program: PathBuf) -> Command {
     let mut cmd = Command::new(program);
+    // The CLIs start helpers of their own (node, git); give them the same PATH.
+    cmd.env("PATH", quarry_core::shell_env::user_path());
     cmd.stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::piped()).kill_on_drop(true);
     // No console window flashing up from the GUI app.
     #[cfg(windows)]
@@ -180,7 +176,7 @@ fn command(program: PathBuf) -> Command {
 /// to `on_line`. An error from `on_line` stops the CLI.
 async fn run(mut cmd: Command, prompt: &str, mut on_line: impl FnMut(Json) -> Result<()>) -> Result<()> {
     let program = cmd.as_std().get_program().to_string_lossy().into_owned();
-    let mut child = cmd.spawn().with_context(|| format!("could not start {program}; check its path in Preferences → AI"))?;
+    let mut child = cmd.spawn().with_context(|| not_found(std::path::Path::new(&program)))?;
     let mut stdin = child.stdin.take().expect("piped stdin");
     stdin.write_all(prompt.as_bytes()).await?;
     drop(stdin);
@@ -203,6 +199,14 @@ async fn run(mut cmd: Command, prompt: &str, mut on_line: impl FnMut(Json) -> Re
         bail!("{program} exited with {status}\n{}", tail.into_iter().rev().collect::<Vec<_>>().join("\n"));
     }
     Ok(())
+}
+
+fn not_found(exe: &std::path::Path) -> String {
+    format!(
+        "could not start {}. Install it, or set its full path in Preferences → AI → Executable (run `which {}` in a terminal to find it)",
+        exe.display(),
+        exe.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default()
+    )
 }
 
 fn blocks(ev: &Json) -> impl Iterator<Item = &Json> {

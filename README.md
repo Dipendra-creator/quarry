@@ -278,7 +278,10 @@ copy it.
 | **Anthropic API** | The Messages API, streamed, with tool use | An API key; the default model is `claude-opus-5-5` |
 | **OpenAI API** | Chat Completions, streamed, with tool calls | An API key; the endpoint can be any OpenAI-compatible server |
 
-The CLIs get Quarry's tools and nothing else: no shell and no file access. API keys are
+The CLIs get Quarry's tools and nothing else: no shell and no file access. Quarry finds
+`claude` and `codex` on your login shell's PATH (and in the usual npm, Homebrew and
+installer folders), also when it was opened from the Dock or Finder; set the full path in
+Preferences → AI if yours lives elsewhere. API keys are
 stored in the OS keychain, and Quarry falls back to `ANTHROPIC_API_KEY` or `OPENAI_API_KEY`
 if no key is saved.
 

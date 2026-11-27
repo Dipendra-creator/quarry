@@ -12,6 +12,7 @@ pub mod model;
 pub mod query;
 pub mod schema;
 pub mod session;
+pub mod shell_env;
 pub mod sql;
 pub mod ssh;
 pub mod store;
