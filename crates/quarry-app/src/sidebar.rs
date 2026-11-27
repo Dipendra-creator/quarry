@@ -12,10 +12,12 @@ use gpui_kit::component::{Sizable as _, h_flex, v_flex};
 use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::*;
 use quarry_core::store::HistoryEntry;
+use quarry_core::sql::Dialect;
 use quarry_core::{ColumnInfo, DriverKind, Item, ItemKind, Session};
 
 use crate::state::{AppState, db};
 use crate::theme::{PaletteExt as _, UI_TEXT};
+use crate::picker::{self, PickerItem};
 use crate::widgets::{flat_switch, icon, placeholder, search_icon};
 use crate::{guard, prompt};
 
@@ -27,6 +29,10 @@ pub enum SidebarEvent {
     OpenSql { title: String, sql: String, saved_id: Option<String> },
     ShowDdl(Item),
     Log(String),
+    /// The current schema changed: title bar and editors follow it.
+    SchemaChanged,
+    /// Show the database switcher (MySQL and MariaDB, whose databases are their schemas).
+    PickDatabase,
 }
 
 #[derive(Clone)]
@@ -47,6 +53,8 @@ pub struct Sidebar {
     columns: HashMap<String, Option<Vec<ColumnInfo>>>,
     selected: Option<String>,
     schemas: Vec<String>,
+    /// A schema switch is running.
+    switching: bool,
     history: Vec<HistoryEntry>,
     scroll: UniformListScrollHandle,
     _subs: Vec<Subscription>,
@@ -87,6 +95,7 @@ impl Sidebar {
             columns: HashMap::new(),
             selected: None,
             schemas: vec![],
+            switching: false,
             history: vec![],
             scroll: UniformListScrollHandle::new(),
             _subs: subs,
@@ -134,9 +143,55 @@ impl Sidebar {
         &self.items
     }
 
+    /// Makes `schema` current: SQL run in this connection resolves unqualified
+    /// names to it (PostgreSQL), and the item list shows its objects.
     pub fn set_schema(&mut self, schema: String, window: &mut Window, cx: &mut Context<Self>) {
-        self.session.set_schema(Some(schema));
-        self.reload(window, cx);
+        if self.session.schema().as_deref() == Some(schema.as_str()) || self.switching {
+            return;
+        }
+        self.switching = true;
+        cx.notify();
+        let session = self.session.clone();
+        cx.spawn_in(window, async move |this, cx| {
+            let r = db(async move { session.use_schema(&schema).await }).await;
+            let _ = this.update_in(cx, |this, window, cx| {
+                this.switching = false;
+                match r {
+                    Ok(()) => {
+                        this.collapsed.clear();
+                        this.reload(window, cx);
+                        cx.emit(SidebarEvent::SchemaChanged);
+                    }
+                    Err(e) => prompt::error("Could not switch schema", &format!("{e:#}"), window, cx),
+                }
+                cx.notify();
+            });
+        })
+        .detach();
+    }
+
+    /// The searchable schema list (engines with schemas) or database list
+    /// (MySQL, MariaDB) behind the sidebar's bottom button.
+    fn pick_namespace(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if !self.session.kind().has_schemas() {
+            cx.emit(SidebarEvent::PickDatabase);
+            return;
+        }
+        let current = self.session.schema();
+        let schemas = self.schemas.clone();
+        let items = schemas
+            .iter()
+            .map(|s| PickerItem {
+                label: s.clone(),
+                detail: if current.as_deref() == Some(s.as_str()) { "current".into() } else { String::new() },
+                icon: IconName::Layers,
+            })
+            .collect();
+        let this = cx.entity().downgrade();
+        picker::open("Switch schema", "Search for schema...", items, window, cx, move |ix, window, cx| {
+            let name = schemas[ix].clone();
+            let _ = this.update(cx, |sb, cx| sb.set_schema(name, window, cx));
+        });
     }
 
     fn filter(&self, cx: &App) -> String {
@@ -306,6 +361,7 @@ impl Sidebar {
                 let collapsed = self.collapsed.contains(&kind);
                 h_flex()
                     .id(SharedString::from(format!("section-{kind:?}")))
+                    .w_full()
                     .h(px(24.))
                     .px(px(4.))
                     .gap(px(4.))
@@ -331,6 +387,7 @@ impl Sidebar {
                 let this = cx.entity().downgrade();
                 h_flex()
                     .id(SharedString::from(format!("item-{key}-{:?}", item.kind)))
+                    .w_full()
                     .h(px(24.))
                     .pl(px(4.))
                     .pr(px(8.))
@@ -400,6 +457,7 @@ impl Sidebar {
                     .into_any_element()
             }
             Row::Column(c) => h_flex()
+                .w_full()
                 .h(px(22.))
                 .pl(px(26.))
                 .pr(px(8.))
@@ -497,21 +555,27 @@ impl Sidebar {
     }
 
     fn render_bottom(&mut self, cx: &mut Context<Self>) -> impl IntoElement {
-        let p = cx.palette().clone();
         let this = cx.entity().downgrade();
-        let templates = |driver: DriverKind| -> Vec<(&'static str, String)> {
+        let templates = |driver: DriverKind, schema: Option<String>| -> Vec<(&'static str, String)> {
             let (id, ty) = match driver {
                 DriverKind::Postgres => ("id SERIAL PRIMARY KEY", "TEXT"),
                 DriverKind::Sqlite => ("id INTEGER PRIMARY KEY AUTOINCREMENT", "TEXT"),
+                DriverKind::SqlServer => ("id INT IDENTITY(1,1) PRIMARY KEY", "NVARCHAR(255)"),
                 _ => ("id INT AUTO_INCREMENT PRIMARY KEY", "VARCHAR(255)"),
             };
+            // New objects go into the schema shown in the sidebar.
+            let name = |n: &str| match &schema {
+                Some(s) if driver.has_schemas() => format!("{}.{n}", Dialect(driver).quote_ident(s)),
+                _ => n.to_string(),
+            };
             vec![
-                ("New Table...", format!("CREATE TABLE new_table (\n    {id},\n    name {ty} NOT NULL\n);")),
-                ("New View...", "CREATE VIEW new_view AS\nSELECT 1;".to_string()),
+                ("New Table...", format!("CREATE TABLE {} (\n    {id},\n    name {ty} NOT NULL\n);", name("new_table"))),
+                ("New View...", format!("CREATE VIEW {} AS\nSELECT 1 AS one;", name("new_view"))),
                 (
                     "New Function...",
                     match driver {
-                        DriverKind::Postgres => "CREATE FUNCTION new_function() RETURNS integer AS $$\n    SELECT 1;\n$$ LANGUAGE sql;".to_string(),
+                        DriverKind::Postgres => format!("CREATE FUNCTION {}() RETURNS integer AS $$\n    SELECT 1;\n$$ LANGUAGE sql;", name("new_function")),
+                        DriverKind::SqlServer => format!("CREATE FUNCTION {}() RETURNS INT AS\nBEGIN\n    RETURN 1;\nEND;", name("new_function")),
                         _ => "CREATE FUNCTION new_function() RETURNS INT DETERMINISTIC\nRETURN 1;".to_string(),
                     },
                 ),
@@ -519,7 +583,6 @@ impl Sidebar {
         };
         let driver = self.session.kind();
         let schema = self.session.schema();
-        let schemas = self.schemas.clone();
         h_flex()
             .h(px(40.))
             .px(px(6.))
@@ -528,7 +591,7 @@ impl Sidebar {
             .child(Button::new("new-item").icon(IconName::Plus).xsmall().outline().dropdown_caret(true).dropdown_menu({
                 let this = this.clone();
                 move |menu, _, _| {
-                    templates(driver).into_iter().fold(menu, |m, (label, sql)| {
+                    templates(driver, schema.clone()).into_iter().fold(menu, |m, (label, sql)| {
                         let this = this.clone();
                         m.item(PopupMenuItem::new(label).on_click(move |_, _, cx| {
                             let _ = this.update(cx, |_, cx| {
@@ -538,27 +601,45 @@ impl Sidebar {
                     })
                 }
             }))
-            .when(self.session.kind().has_schemas(), |d| {
-                d.child(
-                    Button::new("schema")
-                        .label(schema.unwrap_or_else(|| "schema".into()))
-                        .xsmall()
-                        .outline()
-                        .dropdown_caret(true)
-                        .flex_1()
-                        .dropdown_menu(move |menu, _, _| {
-                            schemas.iter().fold(menu.max_h(px(360.)).scrollable(true), |m, s| {
-                                let (this, s) = (this.clone(), s.clone());
-                                m.item(PopupMenuItem::new(s.clone()).on_click(move |_, window, cx| {
-                                    let _ = this.update(cx, |sb, cx| sb.set_schema(s.clone(), window, cx));
-                                }))
-                            })
-                        }),
-                )
-            })
-            .when(!self.session.kind().has_schemas(), |d| {
-                d.child(div().flex_1().text_size(UI_TEXT).text_color(p.secondary_text).truncate().child(self.session.database()))
-            })
+            .child(self.render_namespace(cx))
+    }
+}
+
+impl Sidebar {
+    /// Bottom button: the current schema (PostgreSQL, SQL Server) or database
+    /// (MySQL, MariaDB), opening a searchable list to switch it.
+    fn render_namespace(&mut self, cx: &mut Context<Self>) -> AnyElement {
+        let p = cx.palette().clone();
+        let kind = self.session.kind();
+        if kind.is_file_based() {
+            return div().flex_1().min_w(px(0.)).text_size(UI_TEXT).text_color(p.secondary_text).truncate().child(self.session.database()).into_any_element();
+        }
+        let (what, name, icon_name) = if kind.has_schemas() {
+            ("Schema", self.session.schema().unwrap_or_default(), IconName::Layers)
+        } else {
+            ("Database", self.session.database(), IconName::Database)
+        };
+        let label = if self.switching { "Switching...".to_string() } else if name.is_empty() { format!("Choose {}", what.to_lowercase()) } else { name };
+        h_flex()
+            .id("namespace")
+            .flex_1()
+            .min_w(px(0.))
+            .h(px(24.))
+            .px(px(8.))
+            .gap(px(6.))
+            .rounded(px(4.))
+            .border_1()
+            .border_color(p.button_border)
+            .bg(p.button)
+            .text_size(UI_TEXT)
+            .text_color(p.text)
+            .hover(|s| s.bg(p.button_hover))
+            .child(icon(icon_name, 12., p.secondary_text))
+            .child(div().flex_1().min_w(px(0.)).truncate().child(label))
+            .child(icon(IconName::ChevronsUpDown, 12., p.secondary_text))
+            .tooltip(move |window, cx| gpui_kit::component::tooltip::Tooltip::new(format!("Switch {}", what.to_lowercase())).build(window, cx))
+            .on_click(cx.listener(|this, _, window, cx| this.pick_namespace(window, cx)))
+            .into_any_element()
     }
 }
 

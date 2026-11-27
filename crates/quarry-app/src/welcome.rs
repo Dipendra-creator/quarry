@@ -413,7 +413,8 @@ impl Render for Welcome {
                                     .child(icon(IconName::Plus, 12., p.icon))
                                     .on_click(|_, _, cx| connection_form::open_driver_picker(cx)),
                             )
-                            .child(Input::new(&self.search).prefix(crate::widgets::search_icon(cx)).cleanable(true).h(px(24.))),
+                            .child(Input::new(&self.search).prefix(crate::widgets::search_icon(cx)).cleanable(true).h(px(24.)))
+                            .children(crate::update::pill(cx)),
                     )
                     .child(
                         div()

@@ -13,12 +13,18 @@ pub struct Dialect(pub DriverKind);
 
 impl Dialect {
     fn is_mysql(self) -> bool {
-        matches!(self.0, DriverKind::MySql | DriverKind::MariaDb)
+        self.0.is_mysql()
+    }
+
+    fn is_mssql(self) -> bool {
+        self.0 == DriverKind::SqlServer
     }
 
     pub fn quote_ident(self, ident: &str) -> String {
         if self.is_mysql() {
             format!("`{}`", ident.replace('`', "``"))
+        } else if self.is_mssql() {
+            format!("[{}]", ident.replace(']', "]]"))
         } else {
             format!("\"{}\"", ident.replace('"', "\"\""))
         }
@@ -36,12 +42,15 @@ impl Dialect {
         if self.is_mysql() {
             escaped = escaped.replace('\\', "\\\\");
         }
-        format!("'{escaped}'")
+        // N'…' keeps non-Latin text intact in NVARCHAR columns.
+        if self.is_mssql() { format!("N'{escaped}'") } else { format!("'{escaped}'") }
     }
 
     pub fn literal(self, v: &Value) -> String {
         match v {
             Value::Null => "NULL".into(),
+            // SQL Server has no boolean literals; BIT takes 1 and 0.
+            Value::Bool(b) if self.is_mssql() => if *b { "1" } else { "0" }.into(),
             Value::Bool(b) => if *b { "TRUE" } else { "FALSE" }.into(),
             Value::Int(i) => i.to_string(),
             Value::Float(f) if f.is_finite() => f.to_string(),
@@ -51,6 +60,7 @@ impl Dialect {
                 let hex = crate::value::hex(b);
                 match self.0 {
                     DriverKind::Postgres => format!("'\\x{}'", &hex[2..]),
+                    DriverKind::SqlServer => hex,
                     _ => format!("X'{}'", &hex[2..]),
                 }
             }
@@ -61,6 +71,7 @@ impl Dialect {
     fn as_text(self, column: &str) -> String {
         match self.0 {
             DriverKind::Postgres => format!("{}::TEXT", self.quote_ident(column)),
+            DriverKind::SqlServer => format!("CAST({} AS NVARCHAR(MAX))", self.quote_ident(column)),
             _ => self.quote_ident(column),
         }
     }
@@ -182,7 +193,15 @@ impl Dialect {
                 .collect();
             sql.push_str(&format!(" ORDER BY {}", order.join(", ")));
         }
-        sql.push_str(&format!(" LIMIT {} OFFSET {}", req.limit, req.offset));
+        if self.is_mssql() {
+            // OFFSET … FETCH needs an ORDER BY; without a key, keep the server's order.
+            if req.sort.is_empty() {
+                sql.push_str(" ORDER BY (SELECT NULL)");
+            }
+            sql.push_str(&format!(" OFFSET {} ROWS FETCH NEXT {} ROWS ONLY", req.offset, req.limit));
+        } else {
+            sql.push_str(&format!(" LIMIT {} OFFSET {}", req.limit, req.offset));
+        }
         sql
     }
 
@@ -311,10 +330,141 @@ fn strip_leading_comments(mut s: &str) -> &str {
     }
 }
 
+/// Splits a script the way `kind`'s own clients do. SQL Server scripts are
+/// cut into batches at `GO` lines first. Inside a batch, semicolons within
+/// `BEGIN … END` and `CASE … END` do not split, an `ELSE` stays with its
+/// `IF`, and a CREATE/ALTER of a procedure, function or trigger runs to the
+/// end of its batch, as SQL Server requires.
+pub fn split_for(kind: DriverKind, script: &str) -> Vec<Statement> {
+    if kind != DriverKind::SqlServer {
+        return split_statements(script);
+    }
+    let mut out = Vec::new();
+    for batch in go_batches(script) {
+        let text = &script[batch.clone()];
+        let mut ranges: Vec<Range<usize>> = Vec::new();
+        let mut depth = 0i32;
+        let mut module = false;
+        for s in split_statements(text) {
+            let joins = module || depth > 0 || first_keyword(&s.text) == "ELSE";
+            match ranges.last_mut() {
+                Some(last) if joins => last.end = s.range.end,
+                _ => {
+                    module = is_module_definition(&s.text);
+                    ranges.push(s.range.clone());
+                }
+            }
+            depth = (depth + block_depth_change(&s.text)).max(0);
+        }
+        if module {
+            if let Some(last) = ranges.last_mut() {
+                last.end = last.start + text[last.start..].trim_end().trim_end_matches(';').trim_end().len();
+            }
+        }
+        out.extend(ranges.into_iter().map(|r| {
+            let range = batch.start + r.start..batch.start + r.end;
+            Statement { text: script[range.clone()].to_string(), range }
+        }));
+    }
+    out
+}
+
+/// Net `BEGIN`/`CASE` … `END` nesting a T-SQL fragment opens.
+fn block_depth_change(sql: &str) -> i32 {
+    let w = words(sql, false);
+    let mut depth = 0;
+    for (i, word) in w.iter().enumerate() {
+        match word.as_str() {
+            "BEGIN" => {
+                let next = w.get(i + 1).map(String::as_str);
+                if !matches!(next, Some("TRAN" | "TRANSACTION" | "DISTRIBUTED" | "DIALOG" | "CONVERSATION")) {
+                    depth += 1;
+                }
+            }
+            "CASE" => depth += 1,
+            "END" => depth -= 1,
+            _ => {}
+        }
+    }
+    depth
+}
+
+/// Byte ranges of the batches between `GO` separator lines.
+fn go_batches(script: &str) -> Vec<Range<usize>> {
+    let mut batches = Vec::new();
+    let mut start = 0;
+    let mut offset = 0;
+    for line in script.split_inclusive('\n') {
+        let word = line.trim();
+        let is_go = word.len() >= 2
+            && word[..2].eq_ignore_ascii_case("go")
+            && word[2..].trim().trim_end_matches(';').trim().chars().all(|c| c.is_ascii_digit());
+        if is_go && !inside_quote_or_comment(&script[start..offset]) {
+            batches.push(start..offset);
+            start = offset + line.len();
+        }
+        offset += line.len();
+    }
+    batches.push(start..script.len());
+    batches
+}
+
+/// Whether `text` ends inside a quoted string or block comment.
+fn inside_quote_or_comment(text: &str) -> bool {
+    let bytes = text.as_bytes();
+    let mut i = 0;
+    while i < bytes.len() {
+        i = match bytes[i] {
+            b'\'' | b'"' | b'[' => {
+                let close = if bytes[i] == b'[' { b']' } else { bytes[i] };
+                match bytes[i + 1..].iter().position(|&b| b == close) {
+                    Some(p) => i + p + 2,
+                    None => return true,
+                }
+            }
+            b'-' if bytes.get(i + 1) == Some(&b'-') => skip_line(bytes, i),
+            b'/' if bytes.get(i + 1) == Some(&b'*') => {
+                let end = skip_block_comment(bytes, i);
+                if end >= bytes.len() && !text.ends_with("*/") {
+                    return true;
+                }
+                end
+            }
+            _ => i + 1,
+        };
+    }
+    false
+}
+
+/// CREATE [OR ALTER] / ALTER of a procedure, function or trigger.
+fn is_module_definition(sql: &str) -> bool {
+    let words: Vec<String> = strip_leading_comments(sql)
+        .split(|c: char| !c.is_ascii_alphanumeric() && c != '_')
+        .filter(|w| !w.is_empty())
+        .take(4)
+        .map(|w| w.to_ascii_uppercase())
+        .collect();
+    let w: Vec<&str> = words.iter().map(String::as_str).collect();
+    let object = match w.as_slice() {
+        ["CREATE", "OR", "ALTER", o, ..] => *o,
+        ["CREATE" | "ALTER", o, ..] => *o,
+        _ => return false,
+    };
+    matches!(object, "PROC" | "PROCEDURE" | "FUNCTION" | "TRIGGER")
+}
+
+/// [`statement_at`] for `kind`'s splitting rules.
+pub fn statement_at_for(kind: DriverKind, script: &str, cursor: usize) -> Option<Statement> {
+    closest(split_for(kind, script), cursor)
+}
+
 /// Statement under the cursor ("Run current"). Falls back to the closest
 /// statement before the cursor.
 pub fn statement_at(script: &str, cursor: usize) -> Option<Statement> {
-    let stmts = split_statements(script);
+    closest(split_statements(script), cursor)
+}
+
+fn closest(stmts: Vec<Statement>, cursor: usize) -> Option<Statement> {
     stmts
         .iter()
         .find(|s| cursor >= s.range.start && cursor <= s.range.end + 1)
@@ -323,7 +473,8 @@ pub fn statement_at(script: &str, cursor: usize) -> Option<Statement> {
         .cloned()
 }
 
-fn first_keyword(sql: &str) -> String {
+/// First keyword of a statement, upper-cased (`SELECT`, `INSERT`, …).
+pub fn first_keyword(sql: &str) -> String {
     strip_leading_comments(sql)
         .trim_start_matches('(')
         .split(|c: char| !c.is_ascii_alphanumeric() && c != '_')
@@ -355,7 +506,8 @@ pub fn is_read_only(sql: &str) -> bool {
         })
 }
 
-fn top_level_words(sql: &str) -> Vec<String> {
+/// Upper-cased words outside quotes, comments and parentheses.
+pub fn top_level_words(sql: &str) -> Vec<String> {
     words(sql, true)
 }
 
@@ -393,6 +545,39 @@ fn words(sql: &str, top_only: bool) -> Vec<String> {
         }
     }
     words
+}
+
+/// [`apply_auto_limit`] in `kind`'s syntax: SQL Server has no LIMIT, so it
+/// gets `SELECT TOP (n)` instead.
+pub fn apply_auto_limit_for(kind: DriverKind, stmt: &str, limit: Option<u32>) -> String {
+    if kind != DriverKind::SqlServer {
+        return apply_auto_limit(stmt, limit);
+    }
+    let Some(limit) = limit else {
+        return stmt.to_string();
+    };
+    if first_keyword(stmt) != "SELECT" {
+        return stmt.to_string();
+    }
+    let words = top_level_words(stmt);
+    // TOP would bind to the first SELECT of a UNION only, so those are left alone.
+    if words.iter().any(|w| matches!(w.as_str(), "TOP" | "OFFSET" | "FETCH" | "INTO" | "FOR" | "UNION" | "EXCEPT" | "INTERSECT")) {
+        return stmt.to_string();
+    }
+    let lead = stmt.len() - strip_leading_comments(stmt).len();
+    let body = &stmt[lead..];
+    let mut at = lead + "SELECT".len();
+    let rest = body["SELECT".len()..].trim_start();
+    for modifier in ["DISTINCT", "ALL"] {
+        if rest.len() >= modifier.len()
+            && rest[..modifier.len()].eq_ignore_ascii_case(modifier)
+            && !rest[modifier.len()..].starts_with(|c: char| c.is_ascii_alphanumeric() || c == '_')
+        {
+            at = stmt.len() - rest.len() + modifier.len();
+        }
+    }
+    let stmt = stmt.trim_end().trim_end_matches(';');
+    format!("{} TOP ({limit}){}", &stmt[..at], &stmt[at..])
 }
 
 /// Appends `LIMIT n` to a top-level SELECT that has no LIMIT/FETCH of its
@@ -657,6 +842,75 @@ mod tests {
             Dialect(DriverKind::Postgres).select_query(&req, &[]),
             r#"SELECT * FROM "public"."users" WHERE "age" > '3' ORDER BY "id" DESC LIMIT 300 OFFSET 600"#
         );
+    }
+
+    #[test]
+    fn sql_server() {
+        let ms = Dialect(DriverKind::SqlServer);
+        assert_eq!(ms.quote_ident("we]ird"), "[we]]ird]");
+        assert_eq!(ms.literal(&Value::Text("Zoë's".into())), "N'Zoë''s'");
+        assert_eq!(ms.literal(&Value::Bool(true)), "1");
+        assert_eq!(ms.literal(&Value::Bytes(vec![1, 255])), "0x01FF");
+        let mut req = BrowseRequest {
+            table: TableRef::new(Some("dbo"), "users"),
+            filters: vec![Filter { column: ANY_COLUMN.into(), op: FilterOp::Contains, value: "x".into(), enabled: true }],
+            sort: vec![],
+            limit: 50,
+            offset: 100,
+            columns: vec![],
+        };
+        assert_eq!(
+            ms.select_query(&req, &["name".into()]),
+            "SELECT * FROM [dbo].[users] WHERE (CAST([name] AS NVARCHAR(MAX)) LIKE N'%x%') ORDER BY (SELECT NULL) OFFSET 100 ROWS FETCH NEXT 50 ROWS ONLY"
+        );
+        req.filters.clear();
+        req.sort = vec![Sort { column: "id".into(), descending: false }];
+        assert_eq!(ms.select_query(&req, &[]), "SELECT * FROM [dbo].[users] ORDER BY [id] ASC OFFSET 100 ROWS FETCH NEXT 50 ROWS ONLY");
+
+        let k = DriverKind::SqlServer;
+        assert_eq!(apply_auto_limit_for(k, "select * from t;", Some(300)), "select TOP (300) * from t");
+        assert_eq!(apply_auto_limit_for(k, "SELECT DISTINCT a FROM t", Some(5)), "SELECT DISTINCT TOP (5) a FROM t");
+        assert_eq!(apply_auto_limit_for(k, "-- hi\nSELECT a FROM t", Some(5)), "-- hi\nSELECT TOP (5) a FROM t");
+        assert_eq!(apply_auto_limit_for(k, "select top 3 * from t", Some(5)), "select top 3 * from t");
+        assert_eq!(apply_auto_limit_for(k, "select a from t order by a offset 0 rows", Some(5)), "select a from t order by a offset 0 rows");
+        assert_eq!(apply_auto_limit_for(k, "select 1 union select 2", Some(5)), "select 1 union select 2");
+        assert_eq!(apply_auto_limit_for(k, "select 1", None), "select 1");
+    }
+
+    #[test]
+    fn sql_server_batches() {
+        let k = DriverKind::SqlServer;
+        let script = "CREATE TABLE t (id int);\nGO\nCREATE PROCEDURE p AS\nBEGIN\n  SELECT 1;\n  SELECT 2;\nEND;\ngo\nEXEC p; SELECT 'GO';\nGO 2\nselect 3";
+        let s: Vec<String> = split_for(k, script).into_iter().map(|s| s.text).collect();
+        assert_eq!(s, vec![
+            "CREATE TABLE t (id int)",
+            "CREATE PROCEDURE p AS\nBEGIN\n  SELECT 1;\n  SELECT 2;\nEND",
+            "EXEC p",
+            "SELECT 'GO'",
+            "select 3",
+        ]);
+        let blocks = "IF DB_ID('x') IS NOT NULL BEGIN ALTER DATABASE x SET OFFLINE; DROP DATABASE x; END; CREATE DATABASE x;\n\
+                      BEGIN TRANSACTION; UPDATE t SET a = CASE WHEN b = 1 THEN 2 END; COMMIT;\n\
+                      IF 1 = 1 SELECT 1; ELSE SELECT 2;";
+        let s2: Vec<String> = split_for(k, blocks).into_iter().map(|s| s.text).collect();
+        assert_eq!(s2, vec![
+            "IF DB_ID('x') IS NOT NULL BEGIN ALTER DATABASE x SET OFFLINE; DROP DATABASE x; END",
+            "CREATE DATABASE x",
+            "BEGIN TRANSACTION",
+            "UPDATE t SET a = CASE WHEN b = 1 THEN 2 END",
+            "COMMIT",
+            "IF 1 = 1 SELECT 1; ELSE SELECT 2",
+        ]);
+        // Ranges point into the original script.
+        for st in split_for(k, script) {
+            assert_eq!(&script[st.range.clone()], st.text);
+        }
+        // GO inside a string or comment is not a separator.
+        let quoted = "SELECT 'a\nGO\nb'; /* x\nGO\n*/ SELECT 2";
+        assert_eq!(split_for(k, quoted).len(), 2);
+        assert_eq!(statement_at_for(k, script, script.find("SELECT 2").unwrap()).unwrap().text, s[1]);
+        // Other engines keep plain splitting.
+        assert_eq!(split_for(DriverKind::Postgres, "select 1; select 2").len(), 2);
     }
 
     #[test]

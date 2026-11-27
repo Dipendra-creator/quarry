@@ -10,6 +10,7 @@ use crate::model::{ConnectionConfig, DriverKind};
 use crate::query::QueryResult;
 use crate::schema::{Item, TableRef, TableStructure};
 
+mod mssql;
 mod mysql;
 mod postgres;
 mod sqlite;
@@ -24,6 +25,15 @@ pub trait Driver: Send + Sync {
     /// (PostgreSQL) return an error and the session reconnects instead.
     async fn use_database(&self, name: &str) -> Result<()>;
     async fn list_schemas(&self, include_system: bool) -> Result<Vec<String>>;
+    /// The schema unqualified names resolve to right now, on engines with schemas.
+    async fn default_schema(&self) -> Result<Option<String>> {
+        Ok(None)
+    }
+    /// Makes unqualified names in SQL resolve to `schema` (PostgreSQL's
+    /// `search_path`). Engines without a per-session setting keep their default.
+    async fn use_schema(&self, _schema: &str) -> Result<()> {
+        Ok(())
+    }
     async fn list_items(&self, schema: Option<&str>) -> Result<Vec<Item>>;
     async fn structure(&self, table: &TableRef) -> Result<TableStructure>;
     /// CREATE statement of a table, view, function, … ("DDL" button).
@@ -45,6 +55,11 @@ pub trait Driver: Send + Sync {
     async fn execute(&self, sql: &str) -> Result<QueryResult>;
     /// Runs statements atomically: all succeed or none are applied.
     async fn execute_batch(&self, statements: &[String]) -> Result<()>;
+    /// The plan of `sql`, for engines whose plans need session settings
+    /// rather than an EXPLAIN prefix. `None`: the session uses EXPLAIN.
+    async fn explain(&self, _sql: &str, _analyze: bool) -> Result<Option<QueryResult>> {
+        Ok(None)
+    }
 }
 
 /// Opens a connection. `database` overrides the configured default database.
@@ -53,5 +68,6 @@ pub async fn connect(config: &ConnectionConfig, database: Option<&str>) -> Resul
         DriverKind::Postgres => Arc::new(postgres::PgDriver::connect(config, database).await?),
         DriverKind::MySql | DriverKind::MariaDb => Arc::new(mysql::MyDriver::connect(config, database).await?),
         DriverKind::Sqlite => Arc::new(sqlite::SqliteDriver::open(config)?),
+        DriverKind::SqlServer => Arc::new(mssql::MsDriver::connect(config, database).await?),
     })
 }

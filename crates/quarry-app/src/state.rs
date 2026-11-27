@@ -29,11 +29,22 @@ pub struct Settings {
     pub query_limit: Option<u32>,
     pub show_row_detail: bool,
     pub ai: AiSettings,
+    /// Look for a newer release on GitHub at launch.
+    pub check_updates: bool,
+    /// Unix time of the last update check.
+    pub last_update_check: u64,
 }
 
 impl Default for Settings {
     fn default() -> Self {
-        Self { appearance: Appearance::Light, query_limit: Some(300), show_row_detail: true, ai: AiSettings::default() }
+        Self {
+            appearance: Appearance::Light,
+            query_limit: Some(300),
+            show_row_detail: true,
+            ai: AiSettings::default(),
+            check_updates: true,
+            last_update_check: 0,
+        }
     }
 }
 

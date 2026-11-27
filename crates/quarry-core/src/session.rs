@@ -20,6 +20,12 @@ use crate::value::Value;
 struct State {
     database: String,
     schema: Option<String>,
+    /// The schema the server resolved unqualified names to when this
+    /// database was opened (the login's default schema on SQL Server).
+    home_schema: Option<String>,
+    /// The user picked `schema` (rather than starting in the server's), so
+    /// a reconnect must apply it again.
+    schema_chosen: bool,
     safe_mode: SafeMode,
 }
 
@@ -72,7 +78,7 @@ impl Session {
         let server_version = driver.server_version().await.unwrap_or_default();
         let database = driver.current_database().await.unwrap_or_default();
         let session = Arc::new(Session {
-            state: Mutex::new(State { database, schema: None, safe_mode: config.safe_mode }),
+            state: Mutex::new(State { database, schema: None, home_schema: None, schema_chosen: false, safe_mode: config.safe_mode }),
             config,
             connect_config,
             _tunnel: tunnel,
@@ -80,14 +86,15 @@ impl Session {
             driver: RwLock::new(driver),
             history: History::open(),
         });
+        // Bootstrap commands first: a `SET search_path` there picks the starting schema.
+        session.run_startup_commands(&*session.driver()).await?;
         session.reset_schema().await?;
-        session.run_startup_commands().await?;
         Ok(session)
     }
 
-    async fn run_startup_commands(&self) -> Result<()> {
-        for stmt in sql::split_statements(&self.config.startup_commands) {
-            self.driver()
+    async fn run_startup_commands(&self, driver: &dyn Driver) -> Result<()> {
+        for stmt in sql::split_for(self.kind(), &self.config.startup_commands) {
+            driver
                 .execute(&stmt.text)
                 .await
                 .map_err(|e| anyhow!("bootstrap command failed: {}\n{e}", stmt.text))?;
@@ -95,20 +102,50 @@ impl Session {
         Ok(())
     }
 
-    /// Picks `public` (or the first schema) on engines with schemas.
+    /// Starts in the schema the server resolves names to (`search_path`, the
+    /// user's default schema), else `public`/`dbo`, else the first schema.
     async fn reset_schema(&self) -> Result<()> {
-        let schema = if self.kind().has_schemas() {
+        let (schema, home) = if self.kind().has_schemas() {
             let schemas = self.list_schemas().await?;
-            schemas
-                .iter()
-                .find(|s| *s == "public")
-                .or(schemas.first())
-                .cloned()
+            let current = self.driver().default_schema().await.ok().flatten();
+            let schema = current
+                .clone()
+                .filter(|c| schemas.contains(c))
+                .or_else(|| self.kind().default_schema().map(str::to_string).filter(|d| schemas.contains(d)))
+                .or_else(|| schemas.first().cloned());
+            (schema, current)
         } else {
-            None
+            (None, None)
         };
-        self.state.lock().unwrap().schema = schema;
+        let mut state = self.state.lock().unwrap();
+        state.schema = schema;
+        state.home_schema = home;
         Ok(())
+    }
+
+    /// The schema unqualified names in SQL resolve to: the current schema on
+    /// PostgreSQL, the login's default schema on SQL Server.
+    pub fn unqualified_schema(&self) -> Option<String> {
+        match self.kind() {
+            DriverKind::SqlServer => self.state.lock().unwrap().home_schema.clone(),
+            _ => self.schema(),
+        }
+    }
+
+    /// A fresh connection with the bootstrap commands and the schema the user
+    /// chose applied, so reconnecting changes nothing the user can see. A
+    /// schema the user never picked is left to the bootstrap commands.
+    async fn fresh_driver(&self, database: Option<&str>) -> Result<Arc<dyn Driver>> {
+        let fresh = driver::connect(&self.connect_config, database).await?;
+        self.run_startup_commands(&*fresh).await?;
+        let chosen = {
+            let state = self.state.lock().unwrap();
+            state.schema.clone().filter(|_| state.schema_chosen)
+        };
+        if let Some(schema) = chosen {
+            fresh.use_schema(&schema).await?;
+        }
+        Ok(fresh)
     }
 
     pub fn driver(&self) -> Arc<dyn Driver> {
@@ -131,8 +168,16 @@ impl Session {
         self.state.lock().unwrap().schema.clone()
     }
 
-    pub fn set_schema(&self, schema: Option<String>) {
-        self.state.lock().unwrap().schema = schema;
+    /// Switches the current schema: the sidebar, autocomplete and AI context
+    /// follow it, and on PostgreSQL unqualified names in SQL resolve to it
+    /// (`search_path`). SQL Server has no per-session default schema, so
+    /// there unqualified names keep resolving to the login's default schema.
+    pub async fn use_schema(&self, schema: &str) -> Result<()> {
+        self.driver().use_schema(schema).await?;
+        let mut state = self.state.lock().unwrap();
+        state.schema = Some(schema.to_string());
+        state.schema_chosen = true;
+        Ok(())
     }
 
     /// Current safe mode; the UI can change it while connected.
@@ -160,18 +205,29 @@ impl Session {
     }
 
     pub async fn switch_database(&self, name: &str) -> Result<()> {
+        // The new database has its own schemas; start from the server's default.
+        let previous = {
+            let mut state = self.state.lock().unwrap();
+            state.schema_chosen = false;
+            state.schema.take()
+        };
         if self.driver().use_database(name).await.is_err() {
-            let fresh = driver::connect(&self.connect_config, Some(name)).await?;
-            *self.driver.write().unwrap() = fresh;
+            match self.fresh_driver(Some(name)).await {
+                Ok(fresh) => *self.driver.write().unwrap() = fresh,
+                Err(e) => {
+                    self.state.lock().unwrap().schema = previous;
+                    return Err(e);
+                }
+            }
         }
         self.state.lock().unwrap().database = name.to_string();
         self.reset_schema().await
     }
 
-    /// Opens a fresh connection to the current database.
+    /// Opens a fresh connection to the current database and schema.
     pub async fn reconnect(&self) -> Result<()> {
         let db = self.database();
-        let fresh = driver::connect(&self.connect_config, (!db.is_empty()).then_some(db.as_str())).await?;
+        let fresh = self.fresh_driver((!db.is_empty()).then_some(db.as_str())).await?;
         *self.driver.write().unwrap() = fresh;
         Ok(())
     }
@@ -253,8 +309,8 @@ impl Session {
     /// `limit` appends a LIMIT to SELECTs that have none.
     pub async fn run_script(&self, script: &str, limit: Option<u32>) -> Vec<StatementOutcome> {
         let mut out = Vec::new();
-        for stmt in sql::split_statements(script) {
-            let text = sql::apply_auto_limit(&stmt.text, limit);
+        for stmt in sql::split_for(self.kind(), script) {
+            let text = sql::apply_auto_limit_for(self.kind(), &stmt.text, limit);
             let outcome = match self.execute(&text).await {
                 Ok(r) => Outcome::Result(r),
                 Err(e) => Outcome::Error(format!("{e:#}")),
@@ -317,6 +373,10 @@ impl Session {
         if analyze && !sql::is_read_only(stmt) {
             anyhow::bail!("EXPLAIN ANALYZE runs the statement, so only read-only statements can be analyzed");
         }
+        if let Some(plan) = self.driver().explain(stmt, analyze).await? {
+            let _ = self.history.append(&self.config.id, &self.database(), &format!("-- plan of: {stmt}"));
+            return Ok(plan);
+        }
         let sql = match (self.kind(), analyze) {
             (DriverKind::Postgres, false) => format!("EXPLAIN {stmt}"),
             (DriverKind::Postgres, true) => format!("EXPLAIN (ANALYZE, BUFFERS) {stmt}"),
@@ -325,6 +385,7 @@ impl Session {
             (DriverKind::MariaDb, false) => format!("EXPLAIN {stmt}"),
             (DriverKind::MariaDb, true) => format!("ANALYZE {stmt}"),
             (DriverKind::Sqlite, _) => format!("EXPLAIN QUERY PLAN {stmt}"),
+            (DriverKind::SqlServer, _) => anyhow::bail!("the SQL Server driver did not return a plan"),
         };
         match self.execute(&sql).await {
             // FORMAT=TREE needs MySQL 8.0.16; older servers get the table form.
@@ -341,6 +402,13 @@ impl Session {
                 "SELECT pid, usename AS user, datname AS database, client_addr::text AS client, state,                  now() - query_start AS duration, query FROM pg_stat_activity                  WHERE pid <> pg_backend_pid() AND backend_type = 'client backend' ORDER BY query_start NULLS LAST"
             }
             DriverKind::MySql | DriverKind::MariaDb => "SHOW FULL PROCESSLIST",
+            DriverKind::SqlServer => {
+                "SELECT s.session_id AS id, s.login_name AS [user], DB_NAME(s.database_id) AS [database], \
+                 s.host_name AS client, s.status, r.total_elapsed_time AS duration_ms, t.text AS query \
+                 FROM sys.dm_exec_sessions s LEFT JOIN sys.dm_exec_requests r ON r.session_id = s.session_id \
+                 OUTER APPLY sys.dm_exec_sql_text(r.sql_handle) t \
+                 WHERE s.is_user_process = 1 AND s.session_id <> @@SPID ORDER BY s.session_id"
+            }
             DriverKind::Sqlite => anyhow::bail!("SQLite has no server processes"),
         };
         self.driver().execute(sql).await
@@ -353,6 +421,10 @@ impl Session {
             (DriverKind::Postgres, false) => format!("SELECT pg_terminate_backend({id})"),
             (DriverKind::MySql | DriverKind::MariaDb, true) => format!("KILL QUERY {id}"),
             (DriverKind::MySql | DriverKind::MariaDb, false) => format!("KILL {id}"),
+            (DriverKind::SqlServer, true) => {
+                anyhow::bail!("SQL Server cannot cancel another session's query on its own; use Kill Process to end the session")
+            }
+            (DriverKind::SqlServer, false) => format!("KILL {id}"),
             (DriverKind::Sqlite, _) => anyhow::bail!("SQLite has no server processes"),
         };
         self.execute(&sql).await.map(|_| ())

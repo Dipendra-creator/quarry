@@ -114,6 +114,10 @@ fn backup(c: &ConnectionConfig, path: &std::path::Path) -> Result<String> {
             cmd.args(["-h", &c.host, "-P", &port, "-u", &c.user, "--result-file"]).arg(path).arg(&c.database).env("MYSQL_PWD", pw);
             run(cmd)?;
         }
+        DriverKind::SqlServer => bail!(
+            "SQL Server writes backups on the server itself. Run BACKUP DATABASE [name] TO DISK = N'/path/on/server/name.bak' \
+             in a SQL editor, or use SQL Server Management Studio or Azure Data Studio."
+        ),
     }
     Ok(format!("Saved to {}", path.display()))
 }
@@ -141,6 +145,17 @@ async fn restore(c: ConnectionConfig, path: PathBuf) -> Result<String> {
         DriverKind::MySql | DriverKind::MariaDb => tokio_blocking(move || {
             let mut cmd = Command::new(tool("mysql")?);
             cmd.args(["-h", &c.host, "-P", &port, "-u", &c.user, &c.database]).env("MYSQL_PWD", pw).stdin(std::fs::File::open(&path)?);
+            run(cmd)?;
+            Ok(format!("Restored {}", path.display()))
+        })
+        .await,
+        // A .sql script (with GO batches) through sqlcmd; .bak files are restored by the server.
+        DriverKind::SqlServer => tokio_blocking(move || {
+            let mut cmd = Command::new(tool("sqlcmd")?);
+            cmd.args(["-S", &format!("{},{port}", c.host), "-U", &c.user, "-b", "-C", "-i"]).arg(&path).env("SQLCMDPASSWORD", pw);
+            if !c.database.is_empty() {
+                cmd.args(["-d", &c.database]);
+            }
             run(cmd)?;
             Ok(format!("Restored {}", path.display()))
         })

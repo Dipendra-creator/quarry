@@ -59,6 +59,52 @@ impl Dialect {
         format!("COMMENT ON COLUMN {}.{} IS {value};", self.table(table), self.quote_ident(column))
     }
 
+    /// T-SQL that drops the default constraint of a column, if it has one:
+    /// SQL Server names defaults and refuses to drop or retype a column that has one.
+    fn mssql_drop_default(self, table: &TableRef, column: &str) -> String {
+        let t = self.table(table);
+        format!(
+            "DECLARE @df sysname = (SELECT d.name FROM sys.default_constraints d JOIN sys.columns c \
+             ON c.object_id = d.parent_object_id AND c.column_id = d.parent_column_id \
+             WHERE d.parent_object_id = OBJECT_ID({obj}) AND c.name = {col}); \
+             IF @df IS NOT NULL BEGIN DECLARE @sql nvarchar(max) = {stmt} + QUOTENAME(@df); EXEC sp_executesql @sql; END;",
+            obj = self.string_literal(&t),
+            col = self.string_literal(column),
+            stmt = self.string_literal(&format!("ALTER TABLE {t} DROP CONSTRAINT ")),
+        )
+    }
+
+    /// SQL Server keeps column comments as `MS_Description` extended properties.
+    fn mssql_comment(self, table: &TableRef, column: &str, comment: &Option<String>, replace: bool) -> Option<String> {
+        let schema = table.schema.as_deref().unwrap_or("dbo");
+        let levels = format!(
+            "@level0type = N'SCHEMA', @level0name = {}, @level1type = N'TABLE', @level1name = {}, @level2type = N'COLUMN', @level2name = {}",
+            self.string_literal(schema),
+            self.string_literal(&table.name),
+            self.string_literal(column)
+        );
+        let mut sql = String::new();
+        if replace {
+            let obj = self.string_literal(&self.table(table));
+            sql.push_str(&format!(
+                "IF EXISTS (SELECT 1 FROM sys.extended_properties WHERE class = 1 AND name = N'MS_Description' \
+                 AND major_id = OBJECT_ID({obj}) AND minor_id = COLUMNPROPERTY(OBJECT_ID({obj}), {col}, 'ColumnId')) \
+                 EXEC sys.sp_dropextendedproperty @name = N'MS_Description', {levels};",
+                col = self.string_literal(column)
+            ));
+        }
+        if let Some(c) = comment.as_deref().filter(|c| !c.is_empty()) {
+            if !sql.is_empty() {
+                sql.push(' ');
+            }
+            sql.push_str(&format!(
+                "EXEC sys.sp_addextendedproperty @name = N'MS_Description', @value = {}, {levels};",
+                self.string_literal(c)
+            ));
+        }
+        (!sql.is_empty()).then_some(sql)
+    }
+
     /// ALTER/CREATE/DROP statements for structure changes, in a safe order.
     pub fn structure_sql(self, table: &TableRef, changes: &[StructureChange]) -> Result<Vec<String>> {
         let t = self.table(table);
@@ -66,7 +112,9 @@ impl Dialect {
         for ch in changes {
             match (self.0, ch) {
                 (_, StructureChange::DropIndex { name }) => out.push(match self.0 {
-                    DriverKind::MySql | DriverKind::MariaDb => format!("DROP INDEX {} ON {t};", self.quote_ident(name)),
+                    DriverKind::MySql | DriverKind::MariaDb | DriverKind::SqlServer => {
+                        format!("DROP INDEX {} ON {t};", self.quote_ident(name))
+                    }
                     _ => format!("DROP INDEX {};", self.table(&TableRef::new(table.schema.as_deref(), name))),
                 }),
                 (_, StructureChange::AddIndex { name, columns, unique }) => {
@@ -77,8 +125,45 @@ impl Dialect {
                         self.quote_ident(name)
                     ));
                 }
+                (DriverKind::SqlServer, StructureChange::DropColumn { name }) => {
+                    out.push(self.mssql_drop_default(table, name));
+                    out.push(format!("ALTER TABLE {t} DROP COLUMN {};", self.quote_ident(name)));
+                }
                 (_, StructureChange::DropColumn { name }) => {
                     out.push(format!("ALTER TABLE {t} DROP COLUMN {};", self.quote_ident(name)))
+                }
+                (DriverKind::SqlServer, StructureChange::AddColumn { column }) => {
+                    out.push(format!("ALTER TABLE {t} ADD {};", self.column_spec(column)));
+                    out.extend(self.mssql_comment(table, &column.name, &column.comment, false));
+                }
+                (DriverKind::SqlServer, StructureChange::ModifyColumn { old, new }) => {
+                    if old.name != new.name {
+                        out.push(format!(
+                            "EXEC sp_rename {}, {}, N'COLUMN';",
+                            self.string_literal(&format!("{t}.{}", self.quote_ident(&old.name))),
+                            self.string_literal(&new.name)
+                        ));
+                    }
+                    let col = self.quote_ident(&new.name);
+                    let retype = old.data_type != new.data_type || old.nullable != new.nullable;
+                    if old.default != new.default || (retype && old.default.is_some()) {
+                        out.push(self.mssql_drop_default(table, &new.name));
+                    }
+                    if retype {
+                        out.push(format!(
+                            "ALTER TABLE {t} ALTER COLUMN {col} {} {};",
+                            new.data_type,
+                            if new.nullable { "NULL" } else { "NOT NULL" }
+                        ));
+                    }
+                    if old.default != new.default || (retype && old.default.is_some()) {
+                        if let Some(d) = new.default.as_deref().filter(|d| !d.is_empty()) {
+                            out.push(format!("ALTER TABLE {t} ADD DEFAULT {d} FOR {col};"));
+                        }
+                    }
+                    if old.comment != new.comment {
+                        out.extend(self.mssql_comment(table, &new.name, &new.comment, true));
+                    }
                 }
                 (DriverKind::Sqlite, StructureChange::AddColumn { column }) => {
                     if !column.nullable && column.default.as_deref().is_none_or(str::is_empty) {
@@ -173,6 +258,33 @@ mod tests {
             r#"CREATE INDEX "users_age" ON "public"."users" ("age");"#,
             r#"DROP INDEX "public"."old_idx";"#,
         ]);
+    }
+
+    #[test]
+    fn sql_server() {
+        let ms = Dialect(DriverKind::SqlServer);
+        let t = TableRef::new(Some("dbo"), "users");
+        let sql = ms
+            .structure_sql(&t, &[
+                StructureChange::AddColumn { column: ColumnDef { default: Some("0".into()), comment: Some("age".into()), ..col("age", "int") } },
+                StructureChange::DropIndex { name: "ix".into() },
+            ])
+            .unwrap();
+        assert_eq!(sql[0], "ALTER TABLE [dbo].[users] ADD [age] int NULL DEFAULT 0;");
+        assert!(sql[1].starts_with("EXEC sys.sp_addextendedproperty @name = N'MS_Description', @value = N'age'"), "{}", sql[1]);
+        assert_eq!(sql[2], "DROP INDEX [ix] ON [dbo].[users];");
+
+        let mut new = col("full_name", "nvarchar(200)");
+        new.nullable = false;
+        let sql = ms.structure_sql(&t, &[StructureChange::ModifyColumn { old: col("name", "nvarchar(50)"), new }]).unwrap();
+        assert_eq!(sql, vec![
+            "EXEC sp_rename N'[dbo].[users].[name]', N'full_name', N'COLUMN';",
+            "ALTER TABLE [dbo].[users] ALTER COLUMN [full_name] nvarchar(200) NOT NULL;",
+        ]);
+
+        let sql = ms.structure_sql(&t, &[StructureChange::DropColumn { name: "legacy".into() }]).unwrap();
+        assert!(sql[0].contains("sys.default_constraints") && sql[0].contains("N'legacy'"), "{}", sql[0]);
+        assert_eq!(sql[1], "ALTER TABLE [dbo].[users] DROP COLUMN [legacy];");
     }
 
     #[test]

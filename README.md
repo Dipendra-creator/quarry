@@ -27,7 +27,8 @@
 
 </div>
 
-**Quarry** is a native database client for PostgreSQL, MySQL, MariaDB and SQLite, written
+**Quarry** is a native database client for PostgreSQL, MySQL, MariaDB, Microsoft SQL Server
+and SQLite, written
 in Rust with [GPUI](https://gpui.rs). Its layout, shortcuts and workflows follow
 TablePlus for Windows, with no accounts, no license keys and no paywalls. An AI
 assistant is built in: it reads your schema before it writes SQL, explains and optimizes
@@ -92,6 +93,23 @@ includes the desktop app and the MCP server, and `SHA256SUMS.txt` covers them al
 | macOS | Apple silicon ARM64 | DMG, zipped Quarry.app | macOS 12+ deployment target; tested on macOS 15 |
 | Linux | x64 | DEB, tar.gz | Ubuntu 22.04 / glibc 2.35 |
 | Linux | ARM64 | DEB, tar.gz | Ubuntu 22.04 / glibc 2.35 |
+
+### Updates
+
+From version 0.2.0, Quarry keeps itself up to date from these releases. At launch (at most
+every 12 hours) it asks GitHub for the latest release; when there is a newer one, an
+**Update to x.y.z** button appears in the title bar. Quarry then downloads the package for
+your system, checks it against the release's `SHA256SUMS.txt`, installs it and restarts:
+
+- **macOS:** the new `Quarry.app` replaces the current one, wherever it is installed.
+- **Windows:** the new installer upgrades the installation silently; a portable copy has
+  its files replaced in place.
+- **Linux:** a tarball copy has its files replaced in place. A DEB install downloads the
+  new package and opens it in your software installer, because `/usr/bin` needs root.
+
+Check by hand with **Check for updates…** in the menu (or the Quarry menu on macOS), and
+turn the automatic check off in Preferences → General. Versions before 0.2.0 cannot
+update themselves: install 0.2.0 once by hand.
 
 > [!NOTE]
 > Windows packages are unsigned. macOS builds are ad hoc signed, **not Developer ID signed
@@ -197,6 +215,10 @@ OpenAI API instead, open Preferences → AI (<kbd>Ctrl</kbd>+<kbd>,</kbd>).
 - **Connections:** saved connections and groups, search, duplicate, delete, a status
   color, an environment tag, SSL modes and bootstrap commands. Passwords are kept in the OS
   keychain or asked for each time.
+- **Schemas:** switch schema from the bottom of the sidebar (searchable). On PostgreSQL,
+  SQL you run then resolves unqualified names in that schema (`search_path`), also after
+  a reconnect. SQL Server has no per-session default schema, so there the editor says
+  which schema unqualified names use and autocomplete inserts schema-qualified names.
 - **Over SSH**, with a password or a key, and host-key checking.
 - **Five safe-mode levels**, as in the original. Silent sends queries directly. Alert asks
   before sending. Safe requires typing the connection name. The "except read" variants
@@ -205,7 +227,8 @@ OpenAI API instead, open Preferences → AI (<kbd>Ctrl</kbd>+<kbd>,</kbd>).
   History sidebar, a console log, a database switcher (<kbd>Ctrl</kbd>+<kbd>K</kbd>),
   Open Anything (<kbd>Ctrl</kbd>+<kbd>P</kbd>) and a process list (<kbd>Ctrl</kbd>+<kbd>.</kbd>).
 - **Everything else:** light and dark themes, and backup and restore (`pg_dump`,
-  `mysqldump`, `psql` and `mysql` from your PATH; SQLite built in).
+  `mysqldump`, `psql`, `mysql` and `sqlcmd` from your PATH; SQLite built in). SQL Server
+  backups are written by the server itself (`BACKUP DATABASE`).
 
 ### Supported databases
 
@@ -214,7 +237,12 @@ OpenAI API instead, open Preferences → AI (<kbd>Ctrl</kbd>+<kbd>,</kbd>).
 | PostgreSQL | [`tokio-postgres`](https://crates.io/crates/tokio-postgres) | Passes live tests against a real server |
 | MySQL | [`mysql_async`](https://crates.io/crates/mysql_async) | Passes live tests against a real server |
 | MariaDB | [`mysql_async`](https://crates.io/crates/mysql_async) | Shares the MySQL driver |
+| SQL Server (2012+, Azure SQL) | [`tiberius`](https://crates.io/crates/tiberius) | Passes live tests against SQL Server 2022 |
 | SQLite | [`rusqlite`](https://crates.io/crates/rusqlite), bundled | Passes end-to-end tests |
+
+SQL Server connections use SQL Server authentication (user and password). Scripts may use
+`GO` batch separators, and procedure, function and trigger bodies run as one statement.
+The editor's row limit becomes `SELECT TOP (n)`.
 
 More are on the [roadmap](#roadmap).
 
@@ -412,8 +440,10 @@ drivers run only when you point them at real servers:
 ```sh
 docker run -d --rm --name quarry-test-pg -e POSTGRES_PASSWORD=quarry -p 127.0.0.1:55432:5432 postgres:17
 docker run -d --rm --name quarry-test-mysql -e MYSQL_ROOT_PASSWORD=quarry -e MYSQL_DATABASE=shop -p 127.0.0.1:53306:3306 mysql:8.4
+docker run -d --rm --name quarry-test-mssql -e ACCEPT_EULA=Y -e MSSQL_SA_PASSWORD=Quarry_Test_123 -p 127.0.0.1:51433:1433 mcr.microsoft.com/mssql/server:2022-latest
 QUARRY_TEST_PG=127.0.0.1:55432:postgres:quarry \
 QUARRY_TEST_MYSQL=127.0.0.1:53306:root:quarry \
+QUARRY_TEST_MSSQL=127.0.0.1:51433:sa:Quarry_Test_123 \
 cargo test -p quarry-core --test live
 ```
 
@@ -453,7 +483,7 @@ commands and the signing status.
 
 Features TablePlus has that Quarry does not have yet:
 
-- [ ] Drivers: SQL Server, Redis, MongoDB, ClickHouse, DuckDB, CockroachDB, Redshift,
+- [ ] Drivers: Redis, MongoDB, ClickHouse, DuckDB, CockroachDB, Redshift,
       Greenplum, Vertica, Cassandra, Snowflake, BigQuery, libSQL/Turso, Cloudflare D1,
       DynamoDB, Elasticsearch
 - [ ] Metrics board, ER diagram, a chart tab for results, user and privilege management

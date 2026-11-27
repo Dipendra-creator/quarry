@@ -10,13 +10,16 @@ pub enum DriverKind {
     MySql,
     MariaDb,
     Sqlite,
+    /// Microsoft SQL Server (and Azure SQL), over TDS.
+    SqlServer,
 }
 
 impl DriverKind {
-    pub const ALL: [DriverKind; 4] = [
+    pub const ALL: [DriverKind; 5] = [
         DriverKind::Postgres,
         DriverKind::MySql,
         DriverKind::MariaDb,
+        DriverKind::SqlServer,
         DriverKind::Sqlite,
     ];
 
@@ -26,6 +29,18 @@ impl DriverKind {
             DriverKind::MySql => "MySQL",
             DriverKind::MariaDb => "MariaDB",
             DriverKind::Sqlite => "SQLite",
+            DriverKind::SqlServer => "SQL Server",
+        }
+    }
+
+    /// Other names people search for in the driver picker.
+    pub fn keywords(self) -> &'static [&'static str] {
+        match self {
+            DriverKind::Postgres => &["postgres", "pg"],
+            DriverKind::MySql => &["mysql"],
+            DriverKind::MariaDb => &["mariadb"],
+            DriverKind::Sqlite => &["sqlite"],
+            DriverKind::SqlServer => &["mssql", "microsoft", "ms sql", "azure", "tsql", "t-sql"],
         }
     }
 
@@ -36,6 +51,7 @@ impl DriverKind {
             DriverKind::MySql => "My",
             DriverKind::MariaDb => "Ma",
             DriverKind::Sqlite => "Sl",
+            DriverKind::SqlServer => "Ms",
         }
     }
 
@@ -43,6 +59,7 @@ impl DriverKind {
         match self {
             DriverKind::Postgres => Some(5432),
             DriverKind::MySql | DriverKind::MariaDb => Some(3306),
+            DriverKind::SqlServer => Some(1433),
             DriverKind::Sqlite => None,
         }
     }
@@ -51,6 +68,7 @@ impl DriverKind {
         match self {
             DriverKind::Postgres => "postgres",
             DriverKind::MySql | DriverKind::MariaDb => "root",
+            DriverKind::SqlServer => "sa",
             DriverKind::Sqlite => "",
         }
     }
@@ -59,10 +77,24 @@ impl DriverKind {
         matches!(self, DriverKind::Sqlite)
     }
 
-    /// Whether the server has schemas inside a database (PostgreSQL) or the
-    /// database itself is the namespace (MySQL, SQLite).
+    /// Whether the server has schemas inside a database (PostgreSQL, SQL
+    /// Server) or the database itself is the namespace (MySQL, SQLite).
     pub fn has_schemas(self) -> bool {
-        matches!(self, DriverKind::Postgres)
+        matches!(self, DriverKind::Postgres | DriverKind::SqlServer)
+    }
+
+    /// MySQL and MariaDB share a driver and a dialect.
+    pub fn is_mysql(self) -> bool {
+        matches!(self, DriverKind::MySql | DriverKind::MariaDb)
+    }
+
+    /// Schema new connections start in when the server does not say.
+    pub fn default_schema(self) -> Option<&'static str> {
+        match self {
+            DriverKind::Postgres => Some("public"),
+            DriverKind::SqlServer => Some("dbo"),
+            _ => None,
+        }
     }
 
     pub fn parse(s: &str) -> Option<DriverKind> {
@@ -73,6 +105,7 @@ impl DriverKind {
             .or(match s.as_str() {
                 "pg" | "postgresql" => Some(DriverKind::Postgres),
                 "sqlite3" => Some(DriverKind::Sqlite),
+                "mssql" | "sql_server" | "sql-server" | "microsoft sql server" | "azure sql" => Some(DriverKind::SqlServer),
                 _ => None,
             })
     }

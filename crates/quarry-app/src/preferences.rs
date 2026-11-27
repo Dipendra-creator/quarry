@@ -3,7 +3,7 @@
 //! OpenAI API) and what AI tools may change.
 
 use gpui_kit::component::WindowExt as _;
-use gpui_kit::component::button::Button;
+use gpui_kit::component::button::{Button, ButtonVariants as _};
 use gpui_kit::component::input::{Input, InputEvent, InputState};
 use gpui_kit::component::{Disableable as _, Sizable as _, h_flex, v_flex};
 use gpui_kit::prelude::FluentBuilder as _;
@@ -223,7 +223,48 @@ impl Preferences {
                     window.refresh();
                 }),
             ))
+            .child(hline(cx))
+            .child(row("Updates", self.render_updates(cx)))
             .into_any_element()
+    }
+
+    fn render_updates(&self, cx: &mut Context<Self>) -> impl IntoElement {
+        use crate::update::{Status, Updates, current_version};
+        let p = cx.palette().clone();
+        let auto = AppState::get(cx).settings.check_updates;
+        let status = match Updates::status(cx) {
+            Status::Checking => "Checking…".to_string(),
+            Status::UpToDate => format!("Quarry {} is the latest version.", current_version()),
+            Status::Available(r) => format!("{} is available.", r.tag_name),
+            Status::Downloading { version, done, total } if total > 0 => format!("Downloading {version}… {}%", done * 100 / total),
+            Status::Downloading { version, .. } | Status::Installing(version) => format!("Installing {version}…"),
+            Status::Failed(e) => e.lines().next().unwrap_or_default().to_string(),
+            Status::Idle => format!("You have Quarry {}.", current_version()),
+        };
+        v_flex()
+            .w_full()
+            .gap(px(8.))
+            .child(
+                h_flex()
+                    .gap(px(8.))
+                    .child(
+                        gpui_kit::component::switch::Switch::new("auto-update").checked(auto).on_click(|on: &bool, _, cx| {
+                            let on = *on;
+                            cx.update_global::<AppState, _>(|s, _| {
+                                s.settings.check_updates = on;
+                                s.settings.save();
+                            });
+                        }),
+                    )
+                    .child(div().text_size(UI_TEXT).child("Check for updates when Quarry starts")),
+            )
+            .child(
+                h_flex()
+                    .gap(px(10.))
+                    .child(Button::new("check-updates").label("Check now").small().outline().on_click(|_, window, cx| crate::update::check_now(window, cx)))
+                    .child(Button::new("release-notes").label("Release notes").small().ghost().on_click(|_, _, cx| crate::update::open_notes(cx)))
+                    .child(div().flex_1().min_w(px(0.)).text_size(px(11.)).text_color(p.secondary_text).child(status)),
+            )
     }
 
     fn render_ai(&self, cx: &mut Context<Self>) -> AnyElement {

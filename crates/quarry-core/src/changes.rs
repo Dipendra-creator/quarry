@@ -45,6 +45,14 @@ impl Dialect {
         }
     }
 
+    /// SQL Server's `TOP (1)`, its spelling of MySQL's trailing `LIMIT 1`.
+    fn top_one(self, key_kind: KeyKind) -> &'static str {
+        match (self.0, key_kind) {
+            (crate::model::DriverKind::SqlServer, KeyKind::AllColumns) => " TOP (1)",
+            _ => "",
+        }
+    }
+
     pub fn change_sql(self, table: &TableRef, change: &RowChange, key_kind: KeyKind) -> String {
         let t = self.table(table);
         match change {
@@ -60,7 +68,8 @@ impl Dialect {
                 values.iter().map(|(_, v)| self.literal(v)).collect::<Vec<_>>().join(", ")
             ),
             RowChange::Update { key, values } => format!(
-                "UPDATE {t} SET {} WHERE {}{};",
+                "UPDATE{} {t} SET {} WHERE {}{};",
+                self.top_one(key_kind),
                 values
                     .iter()
                     .map(|(c, v)| format!("{} = {}", self.quote_ident(c), self.literal(v)))
@@ -70,7 +79,7 @@ impl Dialect {
                 self.limit_one(key_kind)
             ),
             RowChange::Delete { key } => {
-                format!("DELETE FROM {t} WHERE {}{};", self.where_key(key), self.limit_one(key_kind))
+                format!("DELETE{} FROM {t} WHERE {}{};", self.top_one(key_kind), self.where_key(key), self.limit_one(key_kind))
             }
         }
     }
@@ -131,6 +140,15 @@ mod tests {
         assert_eq!(
             pg.change_sql(&t(), &RowChange::Insert { values: vec![] }, KeyKind::PrimaryKey),
             r#"INSERT INTO "public"."users" DEFAULT VALUES;"#
+        );
+        let ms = Dialect(DriverKind::SqlServer);
+        assert_eq!(
+            ms.change_sql(&TableRef::new(Some("dbo"), "t"), &del, KeyKind::AllColumns),
+            "DELETE TOP (1) FROM [dbo].[t] WHERE [a] IS NULL AND [b] = N'x';"
+        );
+        assert_eq!(
+            ms.change_sql(&TableRef::new(Some("dbo"), "t"), &upd, KeyKind::PrimaryKey),
+            "UPDATE [dbo].[t] SET [name] = N'O''Neil', [note] = NULL WHERE [id] = 1;"
         );
         let ins = RowChange::Insert { values: vec![("id".into(), Value::Int(2)), ("name".into(), "b".into())] };
         let all = pg.changes_sql(&t(), &[del.clone(), ins, upd], KeyKind::PrimaryKey);

@@ -61,3 +61,25 @@ macOS targets version 12 and newer and is built/tested on macOS 15. Linux target
 glibc-based distributions compatible with the Ubuntu 22.04 runtime. CI proves native
 compilation, unit/SQLite tests and MCP startup; it does not exercise every desktop
 environment, database server or old OS version.
+
+## Self-update
+
+Installed copies update themselves from these releases (`crates/quarry-app/src/update.rs`).
+They read `https://api.github.com/repos/Dipendra-creator/quarry/releases/latest`, pick
+the package by name, verify it against `SHA256SUMS.txt` and install it:
+
+| Install | Package used | How it is installed |
+| --- | --- | --- |
+| macOS app | `Quarry-<v>-macos-<arch>.zip` | Unpacked next to the app, signature checked, swapped in, relaunched |
+| Windows installer | `QuarrySetup-<v>-<arch>.exe` | Run with `/SILENT /RELAUNCH=1`; the installer restarts Quarry |
+| Windows portable | `Quarry-<v>-windows-<arch>.zip` | Files replaced in place (old ones renamed `*.old`) |
+| Linux tarball | `Quarry-<v>-linux-<arch>.tar.gz` | Files replaced in place |
+| Linux DEB | `Quarry-<v>-linux-<arch>.deb` | Downloaded and opened in the system installer |
+
+So the package names in `packaging/release.py` and `SHA256SUMS.txt` are part of the
+update protocol: keep them stable. Only published, non-draft, non-prerelease releases are
+offered, and only when their version is higher than the running one.
+
+To try the updater against an existing release, run a packaged build with
+`QUARRY_UPDATE_TEST_VERSION=0.0.1` (and a scratch `QUARRY_CONFIG_DIR`); it then treats the
+latest release as newer. Builds run from a Cargo `target` directory never update in place.

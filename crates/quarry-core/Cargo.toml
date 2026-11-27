@@ -19,6 +19,21 @@ rusqlite = { version = "0.40", features = ["bundled", "column_decltype"] }
 dirs = "6"
 uuid = { version = "1", features = ["v4"] }
 russh = { version = "0.64", default-features = false, features = ["ring", "rsa", "flate2"] }
+tokio-util = { version = "0.7", features = ["compat"] }
+futures-util = { version = "0.3", default-features = false, features = ["std"] }
+chrono = { version = "0.4", default-features = false, features = ["std"] }
+
+# SQL Server's self-generated TLS certificates fail Apple's TLS stack even when
+# trusted, so macOS uses rustls (which skips verification when asked); the
+# other platforms keep their native TLS like the PostgreSQL and MySQL drivers.
+[target.'cfg(target_os = "macos")'.dependencies.tiberius]
+version = "0.12"
+default-features = false
+features = ["tds73", "chrono", "rustls"]
+[target.'cfg(not(target_os = "macos"))'.dependencies.tiberius]
+version = "0.12"
+default-features = false
+features = ["tds73", "chrono", "native-tls"]
 
 [target.'cfg(windows)'.dependencies]
 keyring = { version = "3", features = ["windows-native"] }

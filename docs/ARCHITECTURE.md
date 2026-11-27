@@ -14,7 +14,7 @@ through `quarry-ai`.
                    ▼                        ▼
             ┌─────────────────────────────────────┐
             │ quarry-core                         │
-            │  Session ── Driver (trait) ── PG / MySQL / SQLite
+            │  Session ── Driver (trait) ── PG / MySQL / SQL Server / SQLite
             │  sql: dialect, filters, splitting, auto-limit, format
             │  changes: staged row edits → INSERT/UPDATE/DELETE
             │  alter: structure edits → ALTER/CREATE/DROP INDEX
@@ -35,13 +35,23 @@ through `quarry-ai`.
     inside `START TRANSACTION … COMMIT`. Columns with the binary charset come back as
     bytes.
   - SQLite uses `rusqlite` (bundled) on `spawn_blocking`.
+  - SQL Server uses `tiberius` on one connection behind a mutex. Batches run inside
+    `BEGIN TRANSACTION … COMMIT` with `XACT_ABORT` on. Plans come from `SHOWPLAN_TEXT`
+    (or `STATISTICS PROFILE` for analyze) through `Driver::explain`, because they are
+    session settings rather than an `EXPLAIN` prefix. macOS builds use rustls for TLS
+    (SQL Server's self-generated certificates fail Apple's TLS stack even when trusted);
+    the other platforms use their native TLS.
 - `Session` is an open connection plus its current database, schema and safe mode. It is
   the API both clients use: `browse` (one page, ordered by primary key by default),
   `count`, `execute`, `run_script`, `apply_changes`, `apply_structure`, `import_csv`,
   `search`, `overview`, `all_columns`, `processes` and `kill`, `switch_database`,
-  `reconnect`. `SessionManager` shares open sessions by connection id.
+  `use_schema`, `reconnect`. `SessionManager` shares open sessions by connection id.
+  `use_schema` calls `Driver::use_schema` (PostgreSQL sets `search_path`), and reconnects
+  re-run the bootstrap commands and re-apply the schema.
 - `sql::Dialect` handles quoting, literals, filter-to-WHERE translation and the SELECT and
-  COUNT queries of the data view. The statement splitter understands quotes, comments
+  COUNT queries of the data view (`LIMIT … OFFSET`, or `OFFSET … FETCH` on SQL Server).
+  `sql::split_for` splits scripts per engine: SQL Server scripts are cut at `GO` lines,
+  and `BEGIN … END` blocks and procedure bodies are kept whole. The statement splitter understands quotes, comments
   and `$$` bodies, and it backs "run current statement", automatic LIMIT and read-only
   detection, which safe mode uses.
 - `changes` and `alter` are pure SQL generators. Previews show exactly what will run.
@@ -78,6 +88,7 @@ title bar, segmented footers, pill tabs and driver badges.
 | `lightcolors.xaml` / `darkcolors.xaml` | `theme.rs` (`Palette`) |
 | Window input bindings | `actions.rs` |
 | (new) AI assistant pane and change approvals | `assistant.rs` |
+| (new) Self-update from GitHub releases | `update.rs` |
 
 Database calls run on the core runtime and come back into GPUI through `state::db`:
 

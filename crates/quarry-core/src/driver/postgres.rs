@@ -224,6 +224,18 @@ impl Driver for PgDriver {
             .collect())
     }
 
+    async fn default_schema(&self) -> Result<Option<String>> {
+        Ok(self.client.query_one("SELECT current_schema()::text", &[]).await?.get(0))
+    }
+
+    async fn use_schema(&self, schema: &str) -> Result<()> {
+        // public stays on the path for the extensions installed there.
+        let d = Dialect(DriverKind::Postgres);
+        let path = if schema == "public" { "public".to_string() } else { format!("{}, public", d.quote_ident(schema)) };
+        self.client.batch_execute(&format!("SET search_path TO {path}")).await?;
+        Ok(())
+    }
+
     async fn list_items(&self, schema: Option<&str>) -> Result<Vec<Item>> {
         let schema = schema.unwrap_or("public");
         let rows = self

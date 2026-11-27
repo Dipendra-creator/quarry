@@ -20,6 +20,7 @@ mod row_detail;
 mod sidebar;
 mod state;
 mod theme;
+mod update;
 mod welcome;
 mod widgets;
 mod workspace;
@@ -46,8 +47,17 @@ fn main() {
         let dark = state::AppState::get(cx).settings.appearance == state::Appearance::Dark;
         theme::apply(dark, None, cx);
         actions::bind(cx);
+        set_menus(cx);
         cx.on_action(|_: &actions::Quit, cx| cx.quit());
         cx.on_action(|_: &actions::OpenConnections, cx| welcome::open(cx));
+        cx.on_action(|_: &actions::CloseWindow, cx| {
+            if let Some(w) = cx.active_window() {
+                let _ = w.update(cx, |_, window, _| window.remove_window());
+            }
+        });
+        // From the macOS menu bar, which has no window to dispatch to.
+        cx.on_action(|_: &actions::Preferences, cx| with_window(cx, crate::preferences::open));
+        cx.on_action(|_: &actions::CheckForUpdates, cx| with_window(cx, update::check_now));
         cx.on_window_closed(|cx, _| {
             if cx.windows().is_empty() {
                 cx.quit();
@@ -55,6 +65,46 @@ fn main() {
         })
         .detach();
         welcome::open(cx);
+        update::init(cx);
         cx.activate(true);
     });
+}
+
+/// Runs `f` in the active window, or the first one.
+fn with_window(cx: &mut gpui_kit::App, f: fn(&mut gpui_kit::Window, &mut gpui_kit::App)) {
+    if let Some(w) = cx.active_window().or_else(|| cx.windows().into_iter().next()) {
+        let _ = w.update(cx, |_, window, cx| f(window, cx));
+    }
+}
+
+/// The macOS menu bar: the app menu (with Quit, so Cmd+Q works) and an Edit
+/// menu whose items reach the focused text field. Other platforms have none.
+fn set_menus(cx: &mut gpui_kit::App) {
+    use gpui_kit::component::input::{Copy, Cut, Paste, Redo, SelectAll, Undo};
+    use gpui_kit::{Menu, MenuItem};
+    if !cfg!(target_os = "macos") {
+        return;
+    }
+    cx.set_menus(vec![
+        Menu::new("Quarry").items([
+            MenuItem::action("Check for Updates…", actions::CheckForUpdates),
+            MenuItem::separator(),
+            MenuItem::action("Settings…", actions::Preferences),
+            MenuItem::separator(),
+            MenuItem::action("Quit Quarry", actions::Quit),
+        ]),
+        Menu::new("Edit").items([
+            MenuItem::action("Undo", Undo),
+            MenuItem::action("Redo", Redo),
+            MenuItem::separator(),
+            MenuItem::action("Cut", Cut),
+            MenuItem::action("Copy", Copy),
+            MenuItem::action("Paste", Paste),
+            MenuItem::action("Select All", SelectAll),
+        ]),
+        Menu::new("Window").items([
+            MenuItem::action("Connections", actions::OpenConnections),
+            MenuItem::action("Close Window", actions::CloseWindow),
+        ]),
+    ]);
 }

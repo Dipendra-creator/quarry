@@ -19,6 +19,7 @@ use crate::data_view::RowSnapshot;
 use crate::grid::{GridDelegate, readonly_table};
 use crate::state::{AppState, db};
 use crate::theme::{MONO, PaletteExt as _, UI_TEXT};
+use crate::actions::kbd;
 use crate::widgets::segmented;
 use crate::{guard, prompt};
 
@@ -41,6 +42,8 @@ pub struct QueryEditor {
     /// Saved-query id when opened from the Queries list.
     pub saved_id: Option<String>,
     pub editor: Entity<EditorState>,
+    /// Tables and columns for autocomplete, from the current schema.
+    catalog: std::rc::Rc<std::cell::RefCell<Catalog>>,
     results: Vec<ResultTab>,
     active: usize,
     show_message: bool,
@@ -70,9 +73,32 @@ impl QueryEditor {
         })];
         let catalog = std::rc::Rc::new(std::cell::RefCell::new(Catalog::default()));
         editor.update(cx, |e, _| {
-            e.lsp_mut().completion_provider = Some(std::rc::Rc::new(SqlCompletion { catalog: catalog.clone() }));
+            e.lsp_mut().completion_provider =
+                Some(std::rc::Rc::new(SqlCompletion { catalog: catalog.clone(), kind: session.kind() }));
         });
-        let s = session.clone();
+        let limit = AppState::get(cx).settings.query_limit;
+        let mut this = Self {
+            session,
+            title,
+            saved_id: None,
+            editor,
+            catalog,
+            results: vec![],
+            active: 0,
+            show_message: false,
+            running: false,
+            limit,
+            focus: cx.focus_handle(),
+            _subs: subs,
+        };
+        this.reload_catalog(cx);
+        this
+    }
+
+    /// Reloads autocomplete's tables and columns (after a schema or database switch).
+    pub fn reload_catalog(&mut self, cx: &mut Context<Self>) {
+        let (s, catalog) = (self.session.clone(), self.catalog.clone());
+        catalog.borrow_mut().qualifier = self.qualifier();
         cx.spawn(async move |_, _| {
             let loaded = db(async move {
                 let items = s.list_items(None).await?;
@@ -85,20 +111,14 @@ impl QueryEditor {
             }
         })
         .detach();
-        let limit = AppState::get(cx).settings.query_limit;
-        Self {
-            session,
-            title,
-            saved_id: None,
-            editor,
-            results: vec![],
-            active: 0,
-            show_message: false,
-            running: false,
-            limit,
-            focus: cx.focus_handle(),
-            _subs: subs,
-        }
+    }
+
+    /// On SQL Server, the current schema when unqualified names resolve to
+    /// another one (there is no per-session default schema to switch).
+    fn qualifier(&self) -> Option<String> {
+        let schema = self.session.schema()?;
+        (self.session.kind() == quarry_core::DriverKind::SqlServer && self.session.unqualified_schema().as_deref() != Some(schema.as_str()))
+            .then_some(schema)
     }
 
     pub fn sql(&self, cx: &App) -> String {
@@ -116,7 +136,7 @@ impl QueryEditor {
         if !selected.trim().is_empty() {
             return Some(selected);
         }
-        sql::statement_at(&state.value(), state.cursor()).map(|s| s.text)
+        sql::statement_at_for(self.session.kind(), &state.value(), state.cursor()).map(|s| s.text)
     }
 
     pub fn run_current(&mut self, window: &mut Window, cx: &mut Context<Self>) {
@@ -318,6 +338,22 @@ Find the cause and give me a corrected query:
                     .text_color(p.secondary_text)
                     .child(format!("Line {}, Column {}", pos.line + 1, pos.character + 1)),
             )
+            .when_some(self.qualifier().zip(self.session.unqualified_schema()), |d, (schema, home)| {
+                d.child(
+                    div()
+                        .id("schema-hint")
+                        .flex_shrink_0()
+                        .text_size(px(11.))
+                        .text_color(p.secondary_text)
+                        .child(format!("Unqualified names use {home}"))
+                        .tooltip(move |window, cx| {
+                            gpui_kit::component::tooltip::Tooltip::new(format!(
+                                "SQL Server has no per-session default schema: unqualified names resolve to your login's default schema ({home}). Write {schema}.table, or pick tables from autocomplete, which adds the schema."
+                            ))
+                            .build(window, cx)
+                        }),
+                )
+            })
             .child(Button::new("q-ai").icon(IconName::Sparkles).label("Ask AI").xsmall().outline().dropdown_caret(true).dropdown_menu({
                 let this = this.clone();
                 move |menu, _, _| {
@@ -333,10 +369,10 @@ Find the cause and give me a corrected query:
                 let this = this.clone();
                 move |menu, _, _| {
                     let (a, b) = (this.clone(), this.clone());
-                    menu.item(PopupMenuItem::new("Save to Queries list (Ctrl+S)").on_click(move |_, window, cx| {
+                    menu.item(PopupMenuItem::new(format!("Save to Queries list ({})", kbd("Ctrl+S"))).on_click(move |_, window, cx| {
                         let _ = a.update(cx, |e, cx| e.save_query(window, cx));
                     }))
-                    .item(PopupMenuItem::new("Save as .sql file... (Ctrl+Shift+S)").on_click(move |_, window, cx| {
+                    .item(PopupMenuItem::new(format!("Save as .sql file... ({})", kbd("Ctrl+Shift+S"))).on_click(move |_, window, cx| {
                         let _ = b.update(cx, |e, cx| e.save_file(window, cx));
                     }))
                 }
@@ -392,17 +428,17 @@ Find the cause and give me a corrected query:
                             .xsmall()
                             .primary()
                             .loading(self.running)
-                            .tooltip("Run the current query (Ctrl+Enter)")
+                            .tooltip(format!("Run the current query ({})", kbd("Ctrl+Enter")))
                             .on_click(cx.listener(|e, _, window, cx| e.run_current(window, cx))),
                     )
                     .child(Button::new("q-run-menu").icon(IconName::ChevronDown).xsmall().primary().dropdown_menu({
                         let this = this.clone();
                         move |menu, _, _| {
                             let (a, b) = (this.clone(), this.clone());
-                            menu.item(PopupMenuItem::new("Run Current (Ctrl+Enter)").on_click(move |_, window, cx| {
+                            menu.item(PopupMenuItem::new(format!("Run Current ({})", kbd("Ctrl+Enter"))).on_click(move |_, window, cx| {
                                 let _ = a.update(cx, |e, cx| e.run_current(window, cx));
                             }))
-                            .item(PopupMenuItem::new("Run All (Ctrl+Shift+Enter)").on_click(move |_, window, cx| {
+                            .item(PopupMenuItem::new(format!("Run All ({})", kbd("Ctrl+Shift+Enter"))).on_click(move |_, window, cx| {
                                 let _ = b.update(cx, |e, cx| e.run_all(window, cx));
                             }))
                         }

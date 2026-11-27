@@ -54,12 +54,35 @@ pub struct DriverPicker {
 impl DriverPicker {
     fn new(window: &mut Window, cx: &mut Context<Self>) -> Self {
         let search = cx.new(|cx| InputState::new(window, cx).placeholder("Search..."));
-        let _sub = cx.subscribe(&search, |_, _, _: &InputEvent, cx| cx.notify());
+        let _sub = cx.subscribe_in(&search, window, |this: &mut Self, _, ev: &InputEvent, window, cx| {
+            if matches!(ev, InputEvent::PressEnter { .. }) {
+                this.create(window, cx);
+            }
+            cx.notify();
+        });
+        // Typing filters right away.
+        let focus = search.read(cx).focus_handle(cx);
+        window.focus(&focus, cx);
         Self { search, selected: DriverKind::Postgres, _sub }
     }
 
+    fn matches(&self, cx: &App) -> Vec<DriverKind> {
+        let q = self.search.read(cx).value().to_lowercase();
+        DriverKind::ALL
+            .into_iter()
+            .filter(|d| q.is_empty() || d.label().to_lowercase().contains(&q) || d.keywords().iter().any(|k| k.contains(q.as_str())))
+            .collect()
+    }
+
+    /// The selected driver, or the first one the search shows when the search hides it.
+    fn effective(&self, cx: &App) -> Option<DriverKind> {
+        let shown = self.matches(cx);
+        if shown.contains(&self.selected) { Some(self.selected) } else { shown.first().copied() }
+    }
+
     fn create(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        open_new(self.selected, cx);
+        let Some(driver) = self.effective(cx) else { return };
+        open_new(driver, cx);
         window.remove_window();
     }
 }
@@ -67,8 +90,9 @@ impl DriverPicker {
 impl Render for DriverPicker {
     fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let p = cx.palette().clone();
-        let q = self.search.read(cx).value().to_lowercase();
-        let items = DriverKind::ALL.into_iter().filter(|d| q.is_empty() || d.label().to_lowercase().contains(&q));
+        let current = self.effective(cx);
+        let items = self.matches(cx);
+        let none = items.is_empty();
         v_flex()
             .size_full()
             .bg(p.window)
@@ -89,8 +113,9 @@ impl Render for DriverPicker {
                             .border_1()
                             .border_color(p.border)
                             .overflow_y_scroll()
-                            .child(h_flex().flex_wrap().justify_center().children(items.map(|d| {
-                                let selected = d == self.selected;
+                            .when(none, |d| d.child(crate::widgets::placeholder("No matching database", cx)))
+                            .child(h_flex().flex_wrap().justify_center().children(items.into_iter().map(|d| {
+                                let selected = Some(d) == current;
                                 v_flex()
                                     .id(d.label())
                                     .w(px(100.))
@@ -177,19 +202,25 @@ impl ConnectionForm {
             cx.new(|cx| InputState::new(window, cx).placeholder(placeholder).default_value(value).masked(masked))
         }
         let default_port = config.driver.default_port().map(|p| p.to_string()).unwrap_or_default();
+        let host_hint = if config.driver == DriverKind::SqlServer { "127.0.0.1, or server.database.windows.net" } else { "127.0.0.1" };
         let port = config.port.map(|p| p.to_string()).unwrap_or_default();
         let ssh = config.ssh.clone().unwrap_or_default();
         let ssh_port = if ssh.port == 0 { String::new() } else { ssh.port.to_string() };
         Self {
             over_ssh: config.ssh.is_some(),
             name: field(window, cx, &config.name, "Connection name", false),
-            host: field(window, cx, &config.host, "127.0.0.1", false),
+            host: field(window, cx, &config.host, host_hint, false),
             port: field(window, cx, &port, &default_port, false),
             user: field(window, cx, &config.user, "user name", false),
             password: field(window, cx, config.password.as_deref().unwrap_or_default(), "password", true),
             database: field(window, cx, &config.database, "database name", false),
             file_path: field(window, cx, &config.file_path, "Path to the database file", false),
-            startup: field(window, cx, &config.startup_commands, "SQL run after connecting, e.g. SET search_path TO app;", false),
+            startup: field(window, cx, &config.startup_commands, match config.driver {
+                DriverKind::Postgres => "SQL run after connecting, e.g. SET search_path TO app;",
+                DriverKind::SqlServer => "SQL run after connecting, e.g. SET LANGUAGE us_english;",
+                DriverKind::Sqlite => "SQL run after opening, e.g. PRAGMA journal_mode = WAL;",
+                _ => "SQL run after connecting, e.g. SET time_zone = '+00:00';",
+            }, false),
             ssh_host: field(window, cx, &ssh.host, "ssh.example.com", false),
             ssh_port: field(window, cx, &ssh_port, "22", false),
             ssh_user: field(window, cx, &ssh.user, "ssh user", false),
@@ -442,7 +473,26 @@ impl Render for ConnectionForm {
                     cx,
                 ))
                 .child(Self::row("Database", Input::new(&self.database), cx))
-                .child(Self::row("SSL mode", h_flex().child(ssl_button), cx))
+                .child(Self::row(if d == DriverKind::SqlServer { "Encryption" } else { "SSL mode" }, h_flex().child(ssl_button), cx))
+                .when(d.has_schemas(), |el| {
+                    el.child(Self::row(
+                        "System schemas",
+                        h_flex().gap(px(8.)).child(
+                            gpui_kit::component::switch::Switch::new("system-schemas")
+                                .checked(self.config.show_system_schemas)
+                                .on_click(cx.listener(|f, on: &bool, _, cx| {
+                                    f.config.show_system_schemas = *on;
+                                    cx.notify();
+                                })),
+                        )
+                        .child(div().text_size(UI_TEXT).text_color(p.secondary_text).child(if d == DriverKind::SqlServer {
+                            "Show sys, INFORMATION_SCHEMA and role schemas"
+                        } else {
+                            "Show pg_catalog and information_schema"
+                        })),
+                        cx,
+                    ))
+                })
                 .child(Self::row(
                     "Over SSH",
                     h_flex().child(
@@ -504,7 +554,10 @@ impl Render for ConnectionForm {
             )
             .child(
                 v_flex()
+                    .id("form-body")
                     .flex_1()
+                    .min_h(px(0.))
+                    .overflow_y_scroll()
                     .px(px(20.))
                     .py(px(12.))
                     .gap(px(10.))

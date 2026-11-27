@@ -159,6 +159,7 @@ impl Palette {
             MySql => c(0x00758F),
             MariaDb => c(0x8C6A4F),
             Sqlite => c(0x0F80CC),
+            SqlServer => c(0xC4302B),
         }
     }
 
@@ -176,7 +177,14 @@ impl PaletteExt for App {
     }
 }
 
+/// Monospace font every platform ships: Consolas does not exist on macOS or
+/// Linux, where text set in it fell back to a proportional font.
+#[cfg(windows)]
 pub const MONO: &str = "Consolas";
+#[cfg(target_os = "macos")]
+pub const MONO: &str = "Menlo";
+#[cfg(not(any(windows, target_os = "macos")))]
+pub const MONO: &str = "DejaVu Sans Mono";
 pub const UI_TEXT: Pixels = px(12.);
 
 /// Switches light/dark and pushes the palette into the component theme.

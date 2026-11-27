@@ -12,7 +12,7 @@ use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::*;
 use quarry_core::{Filter, Item, ItemKind, SafeMode, Session};
 
-use crate::actions::*;
+use crate::actions::{kbd, *};
 use crate::assistant::{AssistantEvent, AssistantPanel};
 use crate::data_view::{DataView, DataViewEvent, Mode, RowSnapshot};
 use crate::picker::{self, PickerItem};
@@ -42,6 +42,8 @@ pub fn open_session(session: Arc<Session>, cx: &mut App) {
     let options = WindowOptions {
         window_bounds: Some(WindowBounds::Windowed(Bounds::centered(None, size, cx))),
         window_min_size: Some(gpui_kit::size(px(900.), px(600.))),
+        // macOS window buttons centered in the 54px title bar, left of the capsules.
+        titlebar: Some(TitlebarOptions { traffic_light_position: Some(point(px(14.), px(20.))), ..TitleBar::title_bar_options() }),
         ..TitleBar::window_options()
     };
     let opened = gpui_kit::open_window(options, cx, |window, cx| {
@@ -132,7 +134,8 @@ impl WorkspaceWindow {
         };
         TitleBar::new()
             .h(px(54.))
-            .pl(px(0.))
+            // On macOS the window buttons sit at the left edge; keep the capsules clear of them.
+            .pl(px(if cfg!(target_os = "macos") { 70. } else { 0. }))
             .bg(p.title_bar)
             .border_color(p.separator)
             .child(
@@ -150,13 +153,13 @@ impl WorkspaceWindow {
                             .child(capsule_separator(cx))
                             .child(capsule_button("preview", IconName::Eye, "Preview changes", has_changes, cx, on(|w, window, cx| w.preview(window, cx))))
                             .child(capsule_separator(cx))
-                            .child(capsule_button("commit", IconName::Check, "Commit changes (Ctrl+S)", has_changes, cx, on(|w, window, cx| w.commit(window, cx)))),
+                            .child(capsule_button("commit", IconName::Check, format!("Commit changes ({})", kbd("Ctrl+S")), has_changes, cx, on(|w, window, cx| w.commit(window, cx)))),
                     )
                     .child(
                         capsule(cx)
                             .child(safe_menu)
-                            .child(capsule_button("databases", IconName::Database, "Show databases list (Ctrl+K)", true, cx, on(|w, window, cx| w.database_list(window, cx))))
-                            .child(capsule_text_button("sql", "SQL", "Open SQL editor (Ctrl+E)", cx, on(|w, window, cx| w.new_query(window, cx)))),
+                            .child(capsule_button("databases", IconName::Database, format!("Show databases list ({})", kbd("Ctrl+K")), true, cx, on(|w, window, cx| w.database_list(window, cx))))
+                            .child(capsule_text_button("sql", "SQL", format!("Open SQL editor ({})", kbd("Ctrl+E")), cx, on(|w, window, cx| w.new_query(window, cx)))),
                     ),
             )
             .child(
@@ -181,17 +184,18 @@ impl WorkspaceWindow {
                 h_flex()
                     .flex_shrink_0()
                     .mr(px(8.))
+                    .children(crate::update::pill(cx))
                     .child(
                         capsule(cx)
                             .child(capsule_button("refresh", IconName::RefreshCw, "Refresh workspace", true, cx, on(|w, window, cx| w.refresh(window, cx))))
-                            .child(capsule_button("anything", IconName::Command, "Open anything (Ctrl+P)", true, cx, on(|w, window, cx| w.open_anything(window, cx))))
-                            .child(capsule_button("assistant", IconName::Sparkles, "AI assistant (Ctrl+L)", true, cx, on(|w, window, cx| w.toggle_assistant(window, cx)))),
+                            .child(capsule_button("anything", IconName::Command, format!("Open anything ({})", kbd("Ctrl+P")), true, cx, on(|w, window, cx| w.open_anything(window, cx))))
+                            .child(capsule_button("assistant", IconName::Sparkles, format!("AI assistant ({})", kbd("Ctrl+L")), true, cx, on(|w, window, cx| w.toggle_assistant(window, cx)))),
                     )
                     .child(
                         capsule(cx)
-                            .child(capsule_button("console", IconName::PanelBottom, "Toggle console log (Ctrl+Alt+C)", true, cx, on(|w, _, cx| w.toggle_console(cx))))
+                            .child(capsule_button("console", IconName::PanelBottom, format!("Toggle console log ({})", kbd("Ctrl+Alt+C")), true, cx, on(|w, _, cx| w.toggle_console(cx))))
                             .child(capsule_separator(cx))
-                            .child(capsule_button("detail", IconName::PanelRight, "Toggle right sidebar (Ctrl+Space)", true, cx, on(|w, _, cx| w.toggle_detail(cx)))),
+                            .child(capsule_button("detail", IconName::PanelRight, format!("Toggle row detail ({})", kbd("Ctrl+Space")), true, cx, on(|w, _, cx| w.toggle_detail(cx)))),
                     ),
             )
     }
@@ -355,7 +359,23 @@ impl ConnWorkspace {
             }
             SidebarEvent::ShowDdl(item) => self.show_ddl(item.clone(), window, cx),
             SidebarEvent::Log(sql) => self.log(sql.clone(), cx),
+            SidebarEvent::SchemaChanged => {
+                let schema = self.session.schema().unwrap_or_default();
+                self.log(format!("-- switched to schema {schema}"), cx);
+                self.refresh_editors(cx);
+            }
+            SidebarEvent::PickDatabase => self.database_list(window, cx),
         }
+    }
+
+    /// Autocomplete of open SQL editors follows the current schema and database.
+    fn refresh_editors(&mut self, cx: &mut Context<Self>) {
+        for t in &self.tabs {
+            if let TabContent::Query(q) = &t.content {
+                q.update(cx, |q, cx| q.reload_catalog(cx));
+            }
+        }
+        cx.notify();
     }
 
     pub fn open_item(&mut self, item: Item, filters: Vec<Filter>, new_tab: bool, window: &mut Window, cx: &mut Context<Self>) {
@@ -646,7 +666,7 @@ impl ConnWorkspace {
                     this.tabs.retain(|t| matches!(t.content, TabContent::Query(_)));
                     this.active_tab = this.tabs.len().checked_sub(1);
                     this.sidebar.update(cx, |s, cx| s.reload(window, cx));
-                    cx.notify();
+                    this.refresh_editors(cx);
                 }
                 Err(e) => prompt::error("Could not open database", &format!("{e:#}"), window, cx),
             });
@@ -692,15 +712,16 @@ impl ConnWorkspace {
 
     fn show_menu(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let items = vec![
-            PickerItem { label: "New SQL query".into(), detail: "Ctrl+E".into(), icon: IconName::FileCode },
-            PickerItem { label: "Open anything".into(), detail: "Ctrl+P".into(), icon: IconName::Search },
-            PickerItem { label: "Open database".into(), detail: "Ctrl+K".into(), icon: IconName::Database },
-            PickerItem { label: "Open SQL file...".into(), detail: "Ctrl+O".into(), icon: IconName::FolderOpen },
-            PickerItem { label: "Processes".into(), detail: "Ctrl+.".into(), icon: IconName::Cpu },
-            PickerItem { label: "AI assistant".into(), detail: "Ctrl+L".into(), icon: IconName::Sparkles },
-            PickerItem { label: "Reconnect".into(), detail: "Ctrl+Shift+R".into(), icon: IconName::RefreshCw },
-            PickerItem { label: "Disconnect".into(), detail: "Shift+F5".into(), icon: IconName::Unplug },
-            PickerItem { label: "Preferences".into(), detail: "Ctrl+,".into(), icon: IconName::Settings },
+            PickerItem { label: "New SQL query".into(), detail: kbd("Ctrl+E"), icon: IconName::FileCode },
+            PickerItem { label: "Open anything".into(), detail: kbd("Ctrl+P"), icon: IconName::Search },
+            PickerItem { label: "Open database".into(), detail: kbd("Ctrl+K"), icon: IconName::Database },
+            PickerItem { label: "Open SQL file...".into(), detail: kbd("Ctrl+O"), icon: IconName::FolderOpen },
+            PickerItem { label: "Processes".into(), detail: kbd("Ctrl+."), icon: IconName::Cpu },
+            PickerItem { label: "AI assistant".into(), detail: kbd("Ctrl+L"), icon: IconName::Sparkles },
+            PickerItem { label: "Reconnect".into(), detail: kbd("Ctrl+Shift+R"), icon: IconName::RefreshCw },
+            PickerItem { label: "Disconnect".into(), detail: kbd("Shift+F5"), icon: IconName::Unplug },
+            PickerItem { label: "Preferences".into(), detail: kbd("Ctrl+,"), icon: IconName::Settings },
+            PickerItem { label: "Check for updates...".into(), detail: String::new(), icon: IconName::CircleArrowUp },
         ];
         let this = cx.entity().downgrade();
         picker::open("Menu", "Search for command...", items, window, cx, move |ix, window, cx| {
@@ -713,7 +734,8 @@ impl ConnWorkspace {
                 5 => w.toggle_assistant(window, cx),
                 6 => w.reconnect(window, cx),
                 7 => w.disconnect(window, cx),
-                _ => crate::preferences::open(window, cx),
+                8 => crate::preferences::open(window, cx),
+                _ => crate::update::check_now(window, cx),
             });
         });
     }
@@ -834,27 +856,33 @@ impl Render for ConnWorkspace {
             Some(TabContent::Data(d)) => d.clone().into_any_element(),
             Some(TabContent::Query(q)) => q.clone().into_any_element(),
             None => placeholder(
-                if self.tabs.is_empty() { "No item\n\nSelect a table in the left sidebar, press Ctrl+P to open anything or Ctrl+E for a SQL editor." } else { "No item" },
+                if self.tabs.is_empty() {
+                    format!("No item\n\nSelect a table in the left sidebar, press {} to open anything or {} for a SQL editor.", kbd("Ctrl+P"), kbd("Ctrl+E"))
+                } else {
+                    "No item".to_string()
+                },
                 cx,
             )
             .text_size(px(16.))
             .into_any_element(),
         };
-        let main = h_flex()
+        let center = v_flex()
+            .flex_1()
+            .min_w(px(0.))
             .size_full()
-            .child(
-                v_flex()
-                    .flex_1()
-                    .min_w(px(0.))
-                    .h_full()
-                    .bg(p.window)
-                    .child(self.render_tab_bar(cx))
-                    .child(div().flex_1().overflow_hidden().child(content))
-                    .when(self.show_console, |d| d.child(self.render_console(cx))),
-            )
-            .when(self.show_detail, |d| {
-                d.child(crate::widgets::vline(cx)).child(div().w(px(260.)).h_full().flex_shrink_0().child(self.row_detail.clone()))
-            });
+            .bg(p.window)
+            .child(self.render_tab_bar(cx))
+            .child(div().flex_1().overflow_hidden().child(content))
+            .when(self.show_console, |d| d.child(self.render_console(cx)));
+        // The row detail pane can be dragged wider for long values.
+        let main = if self.show_detail {
+            h_resizable("detail-split")
+                .child(resizable_panel().child(center))
+                .child(resizable_panel().size(px(300.)).size_range(px(220.)..px(720.)).child(self.row_detail.clone()))
+                .into_any_element()
+        } else {
+            center.into_any_element()
+        };
         h_flex()
             .key_context("Workspace")
             .track_focus(&self.focus_handle)

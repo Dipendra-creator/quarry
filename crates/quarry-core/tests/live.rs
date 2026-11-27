@@ -2,6 +2,7 @@
 //!
 //!   QUARRY_TEST_PG=127.0.0.1:55432:postgres:quarry     (host:port:user:password)
 //!   QUARRY_TEST_MYSQL=127.0.0.1:53306:root:quarry
+//!   QUARRY_TEST_MSSQL=127.0.0.1:51433:sa:Quarry_Test_123
 //!
 //! e.g. `docker run --rm -e POSTGRES_PASSWORD=quarry -p 55432:5432 postgres`.
 
@@ -53,6 +54,16 @@ async fn postgres() {
 
     let schemas = s.list_schemas().await.unwrap();
     assert!(schemas.contains(&"qt".to_string()) && !schemas.contains(&"pg_catalog".to_string()));
+
+    // Switching schema makes unqualified names in SQL resolve to it, also after a reconnect.
+    s.use_schema("qt").await.unwrap();
+    assert_eq!(s.schema().as_deref(), Some("qt"));
+    assert_eq!(s.execute("SELECT count(*) FROM authors").await.unwrap().rows[0][0], Value::Int(2));
+    s.reconnect().await.unwrap();
+    assert_eq!(s.execute("SELECT count(*) FROM books").await.unwrap().rows[0][0], Value::Int(2));
+    assert!(s.list_items(None).await.unwrap().iter().any(|i| i.name() == "cheap"), "sidebar follows the schema");
+    s.use_schema("public").await.unwrap();
+    assert!(s.execute("SELECT count(*) FROM authors").await.is_err(), "back in public");
     let items = s.list_items(Some("qt")).await.unwrap();
     let kinds: Vec<(&str, ItemKind)> = items.iter().map(|i| (i.name(), i.kind)).collect();
     for expected in [
@@ -324,4 +335,217 @@ async fn postgres_over_ssh() {
     cfg.ssh.as_mut().unwrap().password = Some("wrong".into());
     let err = Session::connect(cfg).await.err().unwrap();
     assert!(format!("{err:#}").contains("SSH authentication failed"), "{err:#}");
+}
+
+#[tokio::test]
+async fn sql_server() {
+    let Some(cfg) = config("QUARRY_TEST_MSSQL", DriverKind::SqlServer, "master") else { return };
+    unsafe { std::env::set_var("QUARRY_CONFIG_DIR", std::env::temp_dir().join("quarry-live")) };
+    let admin = Session::connect(cfg.clone()).await.unwrap();
+    assert!(!admin.server_version.is_empty());
+    assert_eq!(admin.database(), "master");
+    rows_ok(&admin.run_script("IF DB_ID('quarry_test') IS NOT NULL BEGIN ALTER DATABASE quarry_test SET SINGLE_USER WITH ROLLBACK IMMEDIATE; DROP DATABASE quarry_test; END; CREATE DATABASE quarry_test", None).await);
+    let mut cfg = cfg;
+    cfg.database = "quarry_test".into();
+    let s = Session::connect(cfg.clone()).await.unwrap();
+    assert_eq!(s.database(), "quarry_test");
+    assert_eq!(s.schema().as_deref(), Some("dbo"));
+
+    // A script with GO batches and a procedure whose body has semicolons.
+    rows_ok(&s.run_script(
+        "CREATE SCHEMA qt;
+         GO
+         CREATE TABLE qt.authors (id int IDENTITY(1,1) PRIMARY KEY, name nvarchar(100) NOT NULL, born date, active bit DEFAULT 1, uid uniqueidentifier DEFAULT NEWID(), created datetime2 DEFAULT SYSDATETIME(), data varbinary(10));
+         EXEC sys.sp_addextendedproperty @name = N'MS_Description', @value = N'people who write', @level0type = N'SCHEMA', @level0name = N'qt', @level1type = N'TABLE', @level1name = N'authors';
+         CREATE TABLE qt.books (id bigint IDENTITY(1,1) PRIMARY KEY, author_id int REFERENCES qt.authors(id) ON DELETE CASCADE, title nvarchar(200), price decimal(8,2), score float);
+         CREATE INDEX books_title ON qt.books (title);
+         GO
+         CREATE VIEW qt.cheap AS SELECT * FROM qt.books WHERE price < 10;
+         GO
+         CREATE PROCEDURE qt.hello AS
+         BEGIN
+           SELECT 'hi' AS greeting;
+           SELECT 2 AS two;
+         END;
+         GO
+         CREATE FUNCTION qt.add_one(@a int) RETURNS int AS BEGIN RETURN @a + 1; END;
+         GO
+         CREATE SEQUENCE qt.counter START WITH 5;
+         INSERT INTO qt.authors (name, born, data) VALUES (N'Ann', '1970-01-02', 0xDEAD), (N'Bob''s Zoë', NULL, NULL);
+         INSERT INTO qt.books (author_id, title, price, score) VALUES (1, N'Rust', 9.50, 1.5), (2, N'SQL', 30, NULL);",
+        None,
+    ).await);
+
+    let schemas = s.list_schemas().await.unwrap();
+    assert!(schemas.contains(&"qt".to_string()) && schemas.contains(&"dbo".to_string()), "{schemas:?}");
+    assert!(!schemas.contains(&"sys".to_string()) && !schemas.contains(&"db_owner".to_string()), "{schemas:?}");
+    let items = s.list_items(Some("qt")).await.unwrap();
+    let kinds: Vec<(&str, ItemKind)> = items.iter().map(|i| (i.name(), i.kind)).collect();
+    for expected in [
+        ("authors", ItemKind::Table),
+        ("books", ItemKind::Table),
+        ("cheap", ItemKind::View),
+        ("hello", ItemKind::Procedure),
+        ("add_one", ItemKind::Function),
+        ("counter", ItemKind::Sequence),
+    ] {
+        assert!(kinds.contains(&expected), "missing {expected:?} in {kinds:?}");
+    }
+    assert_eq!(items.iter().find(|i| i.name() == "authors").unwrap().comment.as_deref(), Some("people who write"));
+
+    let books = s.table_ref(Some("qt"), "books");
+    let st = s.structure(&books).await.unwrap();
+    assert_eq!(st.primary_key(), vec!["id"]);
+    assert_eq!(st.column("id").unwrap().extra.as_deref(), Some("identity"));
+    assert_eq!(st.column("price").unwrap().data_type, "decimal(8,2)");
+    assert_eq!(st.column("title").unwrap().data_type, "nvarchar(200)");
+    assert_eq!(st.column("author_id").unwrap().references.as_deref(), Some("qt.authors(id)"));
+    assert_eq!(st.foreign_keys[0].on_delete, "CASCADE");
+    assert!(st.indexes.iter().any(|i| i.name == "books_title" && !i.unique && i.columns == vec!["title"]));
+    let authors_st = s.structure(&s.table_ref(Some("qt"), "authors")).await.unwrap();
+    assert_eq!(authors_st.column("active").unwrap().default.as_deref(), Some("(1)"));
+    for item in &items {
+        let ddl = s.ddl(item).await.unwrap();
+        assert!(ddl.starts_with("CREATE"), "ddl of {}: {ddl}", item.name());
+    }
+    let ddl = s.ddl(items.iter().find(|i| i.name() == "books").unwrap()).await.unwrap();
+    assert!(ddl.contains("IDENTITY(1,1)") && ddl.contains("FOREIGN KEY") && ddl.contains("[books_title]"), "{ddl}");
+
+    // Typed results.
+    let r = s.execute("SELECT id, name, born, active, data, uid, created FROM qt.authors ORDER BY id").await.unwrap();
+    assert_eq!(r.rows[0][0], Value::Int(1));
+    assert_eq!(r.rows[0][2], Value::Text("1970-01-02".into()));
+    assert_eq!(r.rows[0][3], Value::Bool(true));
+    assert_eq!(r.rows[0][4], Value::Bytes(vec![0xDE, 0xAD]));
+    assert_eq!(r.rows[1][1], Value::Text("Bob's Zoë".into()));
+    assert_eq!(r.rows[1][2], Value::Null);
+    assert!(matches!(&r.rows[0][5], Value::Text(g) if g.len() == 36));
+    assert_eq!(r.columns[0].type_name, "int");
+    let r = s.execute("SELECT price, score FROM qt.books ORDER BY id").await.unwrap();
+    assert_eq!(r.rows[0], vec![Value::Text("9.50".into()), Value::Float(1.5)]);
+    assert_eq!(s.execute("UPDATE qt.books SET score = 2 WHERE id > 0").await.unwrap().rows_affected, Some(2));
+    assert_eq!(s.execute("SELECT qt.add_one(41)").await.unwrap().rows[0][0], Value::Int(42));
+    assert_eq!(s.execute("EXEC qt.hello").await.unwrap().rows[0][0], Value::Text("hi".into()));
+    // The editor's row limit becomes TOP.
+    let out = s.run_script("SELECT * FROM qt.books", Some(1)).await;
+    assert!(matches!(&out[0].outcome, Outcome::Result(r) if r.rows.len() == 1), "{out:?}");
+
+    // Paging, filters and counts.
+    let authors = s.table_ref(Some("qt"), "authors");
+    let page = s
+        .browse(&BrowseRequest {
+            table: authors.clone(),
+            filters: vec![Filter { column: ANY_COLUMN.into(), op: FilterOp::Contains, value: "zoë".into(), enabled: true }],
+            sort: vec![],
+            limit: 10,
+            offset: 0,
+            columns: vec![],
+        })
+        .await
+        .unwrap();
+    assert_eq!(page.rows.len(), 1, "any-column search is case-insensitive and keeps Unicode");
+    let second = s
+        .browse(&BrowseRequest { table: authors.clone(), filters: vec![], sort: vec![Sort { column: "id".into(), descending: false }], limit: 1, offset: 1, columns: vec![] })
+        .await
+        .unwrap();
+    assert_eq!(second.rows[0][0], Value::Int(2));
+    assert_eq!(s.count(&authors, &[]).await.unwrap(), 2);
+
+    // Staged edits.
+    let cols: Vec<String> = page.columns.iter().map(|c| c.name.clone()).collect();
+    let (key, kind) = row_key(&cols, &page.rows[0], &["id".into()]);
+    s.apply_changes(
+        &authors,
+        &[
+            RowChange::Update { key: key.clone(), values: vec![("name".into(), "Bob O'Brien".into()), ("active".into(), Value::Bool(false))] },
+            RowChange::Insert { values: vec![("name".into(), "Cy".into())] },
+        ],
+        kind,
+    )
+    .await
+    .unwrap();
+    assert_eq!(s.count(&authors, &[]).await.unwrap(), 3);
+    let r = s.execute("SELECT name, active FROM qt.authors WHERE id = 2").await.unwrap();
+    assert_eq!(r.rows[0], vec![Value::Text("Bob O'Brien".into()), Value::Bool(false)]);
+    assert!(s
+        .apply_changes(&authors, &[RowChange::Insert { values: vec![("name".into(), "Dee".into())] }, RowChange::Insert { values: vec![("nope".into(), "x".into())] }], kind)
+        .await
+        .is_err());
+    assert_eq!(s.count(&authors, &[]).await.unwrap(), 3, "failed batch rolled back");
+    // A table without a primary key is edited one row at a time.
+    rows_ok(&s.run_script("CREATE TABLE qt.tags (tag nvarchar(20)); INSERT INTO qt.tags VALUES (N'a'), (N'a')", None).await);
+    let tags = s.table_ref(Some("qt"), "tags");
+    s.apply_changes(&tags, &[RowChange::Delete { key: vec![("tag".into(), "a".into())] }], quarry_core::KeyKind::AllColumns).await.unwrap();
+    assert_eq!(s.count(&tags, &[]).await.unwrap(), 1);
+    s.apply_changes(&authors, &[RowChange::Delete { key }], kind).await.unwrap();
+    assert_eq!(s.count(&books, &[]).await.unwrap(), 1, "cascade deleted the book");
+
+    let cols = s.all_columns(Some("qt")).await.unwrap();
+    assert!(cols.contains(&("books".into(), "price".into(), "decimal(8,2)".into())), "{cols:?}");
+    let hits = s.search("rust", Some("qt"), 10, 5).await.unwrap();
+    assert_eq!(hits.len(), 1);
+
+    // Structure edits, including columns with default constraints.
+    use quarry_core::alter::{ColumnDef, StructureChange};
+    let col = |n: &str, t: &str| ColumnDef { name: n.into(), data_type: t.into(), nullable: true, default: None, comment: None };
+    // SQL Server refuses to retype a column an index uses, so that index goes first.
+    s.apply_structure(&books, &[
+        StructureChange::DropIndex { name: "books_title".into() },
+        StructureChange::AddColumn { column: ColumnDef { default: Some("0".into()), comment: Some("stock".into()), ..col("qty", "int") } },
+        StructureChange::ModifyColumn { old: col("title", "nvarchar(200)"), new: ColumnDef { nullable: false, ..col("name", "nvarchar(300)") } },
+        StructureChange::AddIndex { name: "books_qty".into(), columns: vec!["qty".into()], unique: false },
+    ])
+    .await
+    .unwrap();
+    let st = s.structure(&books).await.unwrap();
+    assert_eq!(st.column("qty").unwrap().default.as_deref(), Some("(0)"));
+    assert_eq!(st.column("qty").unwrap().comment.as_deref(), Some("stock"));
+    assert!(!st.column("name").unwrap().nullable && st.column("title").is_none());
+    assert_eq!(st.column("name").unwrap().data_type, "nvarchar(300)");
+    s.apply_structure(&books, &[
+        StructureChange::DropIndex { name: "books_qty".into() },
+        StructureChange::ModifyColumn {
+            old: ColumnDef { default: Some("(0)".into()), comment: Some("stock".into()), ..col("qty", "int") },
+            new: ColumnDef { default: Some("5".into()), comment: Some("in stock".into()), ..col("qty", "bigint") },
+        },
+    ])
+    .await
+    .unwrap();
+    let st = s.structure(&books).await.unwrap();
+    assert_eq!(st.column("qty").unwrap().data_type, "bigint");
+    assert_eq!(st.column("qty").unwrap().default.as_deref(), Some("(5)"));
+    assert_eq!(st.column("qty").unwrap().comment.as_deref(), Some("in stock"));
+    // The column still has a default constraint; dropping it removes that first.
+    s.apply_structure(&books, &[StructureChange::DropColumn { name: "qty".into() }]).await.unwrap();
+    assert!(s.structure(&books).await.unwrap().column("qty").is_none());
+
+    // Plans, with and without running the query.
+    assert!(!s.explain("SELECT * FROM qt.books WHERE id = 1", false).await.unwrap().rows.is_empty());
+    assert!(!s.explain("SELECT * FROM qt.books", true).await.unwrap().rows.is_empty());
+    assert!(s.explain("DELETE FROM qt.books", true).await.is_err());
+    assert_eq!(s.count(&books, &[]).await.unwrap(), 1, "plans run nothing");
+
+    // Schemas: the sidebar and AI follow the chosen schema.
+    s.use_schema("qt").await.unwrap();
+    assert!(s.list_items(None).await.unwrap().iter().any(|i| i.name() == "books"));
+    s.reconnect().await.unwrap();
+    assert_eq!(s.schema().as_deref(), Some("qt"));
+
+    // Processes and killing another session.
+    let other = Session::connect(cfg.clone()).await.unwrap();
+    let procs = s.processes().await.unwrap();
+    let id_col = procs.column_index("id").unwrap();
+    assert!(!procs.rows.is_empty());
+    assert!(s.kill(1, true).await.is_err(), "cancel-only is not available");
+    let id = match &procs.rows[0][id_col] { Value::Int(p) => *p, v => panic!("{v:?}") };
+    s.kill(id, false).await.unwrap();
+    drop(other);
+
+    // Database switching uses USE on the same connection.
+    assert!(s.list_databases().await.unwrap().contains(&"quarry_test".to_string()));
+    s.switch_database("master").await.unwrap();
+    assert_eq!(s.execute("SELECT DB_NAME()").await.unwrap().rows[0][0], Value::Text("master".into()));
+    assert_eq!(s.schema().as_deref(), Some("dbo"));
+    drop(s);
+    rows_ok(&admin.run_script("ALTER DATABASE quarry_test SET SINGLE_USER WITH ROLLBACK IMMEDIATE; DROP DATABASE quarry_test", None).await);
 }

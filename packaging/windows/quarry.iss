@@ -64,6 +64,14 @@ Name: "{autodesktop}\Quarry"; Filename: "{app}\quarry.exe"; Tasks: desktopicon; 
 
 [Run]
 Filename: "{app}\quarry.exe"; Description: "{cm:LaunchProgram,Quarry}"; Flags: nowait postinstall skipifsilent
+; Self-update: Quarry runs this installer with /SILENT /RELAUNCH=1 and quits, so start it again.
+Filename: "{app}\quarry.exe"; Flags: nowait runasoriginaluser; Check: RelaunchAfterUpdate
+
+[Code]
+function RelaunchAfterUpdate: Boolean;
+begin
+  Result := WizardSilent and (ExpandConstant('{param:relaunch|0}') = '1');
+end;
 
 ; Saved connections in %APPDATA%\Quarry and passwords in Credential Manager are
 ; kept on uninstall, like the original app keeps its data.

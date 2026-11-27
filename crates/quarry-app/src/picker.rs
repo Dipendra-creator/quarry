@@ -63,18 +63,25 @@ pub fn open(
 ) {
     let input = cx.new(|cx| InputState::new(window, cx).placeholder(placeholder));
     let picker = cx.new(|cx| {
-        let _sub = cx.subscribe_in(&input, window, |p: &mut Picker, _, ev: &InputEvent, window, cx| match ev {
-            InputEvent::Change => {
+        // Enter reaches the dialog as its Confirm action (below), which closes
+        // the dialog and with it this picker before an input event would arrive.
+        let _sub = cx.subscribe_in(&input, window, |p: &mut Picker, _, ev: &InputEvent, _, cx| {
+            if matches!(ev, InputEvent::Change) {
                 p.selected = 0;
                 cx.notify();
             }
-            InputEvent::PressEnter { .. } => p.pick(window, cx),
-            _ => {}
         });
         Picker { input: input.clone(), items, selected: 0, on_pick: Rc::new(on_pick), _sub }
     });
     let focus = input.read(cx).focus_handle(cx);
-    window.open_dialog(cx, move |dialog, _, _| dialog.title(title).w(px(520.)).child(picker.clone()));
+    window.open_dialog(cx, move |dialog, _, _| {
+        let p = picker.clone();
+        dialog.title(title).w(px(520.)).child(picker.clone()).on_ok(move |_, window, cx| {
+            // Picks the highlighted entry; `pick` closes the dialog itself.
+            p.update(cx, |p, cx| p.pick(window, cx));
+            false
+        })
+    });
     window.focus(&focus, cx);
 }
 

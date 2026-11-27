@@ -212,7 +212,8 @@ impl AssistantPanel {
     fn render_header(&self, cx: &mut Context<Self>) -> impl IntoElement {
         let p = cx.palette().clone();
         let summary = AppState::get(cx).settings.ai.summary();
-        let button = |id: &'static str, name: IconName, tip: &'static str| {
+        let button = |id: &'static str, name: IconName, tip: String| {
+            let tip = SharedString::from(tip);
             div()
                 .id(id)
                 .size(px(24.))
@@ -222,7 +223,7 @@ impl AssistantPanel {
                 .rounded(px(4.))
                 .hover(|s| s.bg(p.hover))
                 .child(icon(name, 14., p.icon))
-                .tooltip(move |window, cx| gpui_kit::component::tooltip::Tooltip::new(tip).build(window, cx))
+                .tooltip(move |window, cx| gpui_kit::component::tooltip::Tooltip::new(tip.clone()).build(window, cx))
         };
         h_flex()
             .h(px(36.))
@@ -239,9 +240,9 @@ impl AssistantPanel {
                     .child(div().text_size(UI_TEXT).font_weight(FontWeight::SEMIBOLD).child("AI Assistant"))
                     .child(div().text_size(px(10.)).text_color(p.secondary_text).truncate().child(summary)),
             )
-            .child(button("ai-settings", IconName::Settings, "AI settings").on_click(|_, window, cx| crate::preferences::open_ai(window, cx)))
-            .child(button("ai-new", IconName::SquarePen, "New chat").on_click(cx.listener(|p, _, _, cx| p.new_chat(cx))))
-            .child(button("ai-close", IconName::X, "Close (Ctrl+L)").on_click(cx.listener(|_, _, _, cx| cx.emit(AssistantEvent::Close))))
+            .child(button("ai-settings", IconName::Settings, "AI settings".into()).on_click(|_, window, cx| crate::preferences::open_ai(window, cx)))
+            .child(button("ai-new", IconName::SquarePen, "New chat".into()).on_click(cx.listener(|p, _, _, cx| p.new_chat(cx))))
+            .child(button("ai-close", IconName::X, format!("Close ({})", crate::actions::kbd("Ctrl+L"))).on_click(cx.listener(|_, _, _, cx| cx.emit(AssistantEvent::Close))))
     }
 
     fn render_part(&self, entry: usize, part: usize, value: &Part, cx: &mut Context<Self>) -> AnyElement {

@@ -23,6 +23,9 @@ const KEYWORDS: &[&str] = &[
 #[derive(Default)]
 pub struct Catalog {
     pub tables: Vec<String>,
+    /// Schema to prefix completed table names with, when unqualified names
+    /// would resolve elsewhere (SQL Server outside the login's default schema).
+    pub qualifier: Option<String>,
     pub functions: Vec<String>,
     /// Lower-cased table name → (column, type).
     pub columns: HashMap<String, Vec<(String, String)>>,
@@ -45,6 +48,8 @@ impl Catalog {
 
 pub struct SqlCompletion {
     pub catalog: Rc<RefCell<Catalog>>,
+    /// Statement boundaries follow the engine (GO batches on SQL Server).
+    pub kind: quarry_core::DriverKind,
 }
 
 fn is_word(c: char) -> bool {
@@ -107,7 +112,10 @@ pub fn suggest(catalog: &Catalog, statement: &str, prefix: &str) -> Vec<(String,
         }
     }
     for t in catalog.tables.iter().filter(|t| starts(t, prefix)) {
-        out.push((t.clone(), CompletionItemKind::CLASS, "table".into()));
+        match &catalog.qualifier {
+            Some(q) => out.push((format!("{q}.{t}"), CompletionItemKind::CLASS, "table".into())),
+            None => out.push((t.clone(), CompletionItemKind::CLASS, "table".into())),
+        }
     }
     for f in catalog.functions.iter().filter(|f| starts(f, prefix)) {
         out.push((f.clone(), CompletionItemKind::FUNCTION, "function".into()));
@@ -131,7 +139,7 @@ impl CompletionProvider for SqlCompletion {
             .last()
             .map_or(offset, |(i, _)| i);
         let prefix = &text[word_start..offset];
-        let stmt = quarry_core::sql::statement_at(&text, offset).map(|s| s.text).unwrap_or_default();
+        let stmt = quarry_core::sql::statement_at_for(self.kind, &text, offset).map(|s| s.text).unwrap_or_default();
         let items = suggest(&self.catalog.borrow(), &stmt, prefix);
         let partial_start = prefix.rfind('.').map_or(word_start, |p| word_start + p + 1);
         let range = lsp_types::Range { start: rope.offset_to_position(partial_start), end: rope.offset_to_position(offset) };
@@ -176,5 +184,8 @@ mod tests {
         let top = labels(suggest(&c, "select * from u", "u"));
         assert!(top.contains(&"users".to_string()) && top.contains(&"UPDATE".to_string()) && top.contains(&"UNION".to_string()));
         assert!(suggest(&c, "select", "").is_empty());
+        let mut q = catalog();
+        q.qualifier = Some("sales".into());
+        assert!(labels(suggest(&q, "select * from or", "or")).contains(&"sales.orders".to_string()));
     }
 }

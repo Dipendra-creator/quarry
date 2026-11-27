@@ -608,6 +608,7 @@ impl DataView {
     fn default_type(&self) -> &'static str {
         match self.session.kind() {
             quarry_core::DriverKind::Postgres | quarry_core::DriverKind::Sqlite => "text",
+            quarry_core::DriverKind::SqlServer => "nvarchar(255)",
             _ => "varchar(255)",
         }
     }
@@ -1066,20 +1067,40 @@ impl DataView {
 
     fn render_structure(&mut self, cx: &mut Context<Self>) -> impl IntoElement {
         let p = cx.palette().clone();
-        let section = |title: &'static str, t: &Option<Entity<TableState<GridDelegate>>>, h: f32| {
-            v_flex()
-                .h(px(h))
-                .flex_shrink_0()
-                .child(div().px(px(8.)).py(px(4.)).text_size(UI_TEXT).font_weight(FontWeight::SEMIBOLD).text_color(p.text).child(title))
-                .when_some(t.clone(), |d, t| d.child(div().flex_1().child(DataTable::new(&t).stripe(true).bordered(false).xsmall())))
+        // Each grid is as tall as its rows (up to `max_rows`, then it scrolls), so
+        // short tables leave no gaps and wide ones are not squeezed into a fixed box.
+        const TITLE: f32 = 28.;
+        const HEADER: f32 = 30.;
+        const ROW: f32 = 27.;
+        const SCROLLBAR: f32 = 12.;
+        let section = |title: &'static str, empty: &'static str, t: &Option<Entity<TableState<GridDelegate>>>, max_rows: usize| {
+            let rows = t.as_ref().map(|t| t.read(cx).delegate().rows.len()).unwrap_or(0);
+            let heading = h_flex()
+                .h(px(TITLE))
+                .px(px(8.))
+                .gap(px(6.))
+                .text_size(UI_TEXT)
+                .child(div().font_weight(FontWeight::SEMIBOLD).text_color(p.text).child(title))
+                .when(rows > 0, |d| d.child(div().text_color(p.secondary_text).child(format!("{rows}"))));
+            let body = match t.clone() {
+                Some(t) if rows > 0 => div()
+                    .h(px(HEADER + rows.min(max_rows) as f32 * ROW + SCROLLBAR))
+                    .child(DataTable::new(&t).stripe(true).bordered(false).xsmall())
+                    .into_any_element(),
+                Some(_) => div().px(px(8.)).pb(px(8.)).text_size(UI_TEXT).text_color(p.secondary_text).child(empty).into_any_element(),
+                None => div().into_any_element(),
+            };
+            v_flex().flex_shrink_0().child(heading).child(body)
         };
         v_flex()
             .id("structure")
             .size_full()
+            .gap(px(6.))
+            .pb(px(12.))
             .overflow_y_scroll()
-            .child(section("Columns", &self.columns_table, 300.))
-            .child(section("Indexes", &self.indexes_table, 180.))
-            .child(section("Foreign Keys", &self.fks_table, 180.))
+            .child(section("Columns", "No columns", &self.columns_table, 40))
+            .child(section("Indexes", "No indexes", &self.indexes_table, 15))
+            .child(section("Foreign Keys", "No foreign keys", &self.fks_table, 15))
     }
 }
 

@@ -46,12 +46,13 @@ pub fn capsule_separator(cx: &App) -> Div {
 pub fn capsule_button(
     id: impl Into<ElementId>,
     icon_name: IconName,
-    tooltip: &'static str,
+    tooltip: impl Into<SharedString>,
     enabled: bool,
     cx: &App,
     on_click: impl Fn(&ClickEvent, &mut Window, &mut App) + 'static,
 ) -> Stateful<Div> {
     let p = cx.palette();
+    let tooltip: SharedString = tooltip.into();
     div()
         .id(id)
         .size(px(28.))
@@ -62,18 +63,19 @@ pub fn capsule_button(
         .child(icon(icon_name, 15., p.icon))
         .when(!enabled, |d| d.opacity(0.35))
         .when(enabled, |d| d.hover(|s| s.bg(p.capsule_hover)).on_click(on_click))
-        .tooltip(move |window, cx| gpui_kit::component::tooltip::Tooltip::new(tooltip).build(window, cx))
+        .tooltip(move |window, cx| gpui_kit::component::tooltip::Tooltip::new(tooltip.clone()).build(window, cx))
 }
 
 /// Same as [`capsule_button`] with text instead of an icon ("SQL").
 pub fn capsule_text_button(
     id: impl Into<ElementId>,
     label: &'static str,
-    tooltip: &'static str,
+    tooltip: impl Into<SharedString>,
     cx: &App,
     on_click: impl Fn(&ClickEvent, &mut Window, &mut App) + 'static,
 ) -> Stateful<Div> {
     let p = cx.palette();
+    let tooltip: SharedString = tooltip.into();
     div()
         .id(id)
         .size(px(28.))
@@ -87,7 +89,7 @@ pub fn capsule_text_button(
         .child(label)
         .hover(|s| s.bg(p.capsule_hover))
         .on_click(on_click)
-        .tooltip(move |window, cx| gpui_kit::component::tooltip::Tooltip::new(tooltip).build(window, cx))
+        .tooltip(move |window, cx| gpui_kit::component::tooltip::Tooltip::new(tooltip.clone()).build(window, cx))
 }
 
 /// Bordered 24px button used in footers and forms (FooterBarButtonStyle).

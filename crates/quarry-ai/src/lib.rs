@@ -137,7 +137,7 @@ fn table_args(extra: Json) -> Json {
     let mut props = json!({
         "connection": conn_arg(),
         "table": {"type": "string", "description": "Table or view name."},
-        "schema": {"type": "string", "description": "Schema (PostgreSQL). Defaults to the current schema."}
+        "schema": {"type": "string", "description": "Schema (PostgreSQL, SQL Server). Defaults to the current schema."}
     });
     props.as_object_mut().unwrap().extend(extra.as_object().cloned().unwrap_or_default());
     props
@@ -197,7 +197,7 @@ impl Toolbox {
                     json!({
                         "id": {"type": "string", "description": "Existing id to update; omit to create."},
                         "name": {"type": "string"},
-                        "driver": {"type": "string", "enum": ["postgres", "mysql", "mariadb", "sqlite"]},
+                        "driver": {"type": "string", "enum": ["postgres", "mysql", "mariadb", "sqlserver", "sqlite"]},
                         "host": {"type": "string"}, "port": {"type": "integer"}, "user": {"type": "string"},
                         "password": {"type": "string"}, "database": {"type": "string"},
                         "file_path": {"type": "string", "description": "SQLite database file."},
@@ -218,7 +218,7 @@ impl Toolbox {
             },
             Tool {
                 name: "list_schemas",
-                description: "List schemas of the current database (PostgreSQL; empty for MySQL/SQLite).",
+                description: "List schemas of the current database (PostgreSQL, SQL Server; empty for MySQL/SQLite).",
                 input_schema: object(json!({"connection": conn_arg()}), &["connection"]),
             },
             Tool {
@@ -431,7 +431,7 @@ impl Toolbox {
                 let s = self.session(&a).await?;
                 let analyze = a.0.get("analyze").and_then(Json::as_bool).unwrap_or(false);
                 let r = s.explain(a.str("sql")?, analyze).await?;
-                // PostgreSQL and MySQL return the plan as lines of one column.
+                // PostgreSQL, MySQL and SQL Server (SHOWPLAN_TEXT) return the plan as lines of one column.
                 if r.columns.len() == 1 {
                     let lines: Vec<String> = r.rows.iter().map(|row| row[0].display()).collect();
                     return Ok(json!({"plan": lines.join("\n")}));
