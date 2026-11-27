@@ -55,6 +55,13 @@ pub trait Driver: Send + Sync {
     async fn execute(&self, sql: &str) -> Result<QueryResult>;
     /// Runs statements atomically: all succeed or none are applied.
     async fn execute_batch(&self, statements: &[String]) -> Result<()>;
+    /// Makes the connection itself refuse changes (or allow them again),
+    /// where the engine has a session setting for it. Quarry also refuses
+    /// statements that are not reads before they get here; this catches what
+    /// a read can hide, such as a function call that writes.
+    async fn set_read_only(&self, _on: bool) -> Result<()> {
+        Ok(())
+    }
     /// The plan of `sql`, for engines whose plans need session settings
     /// rather than an EXPLAIN prefix. `None`: the session uses EXPLAIN.
     async fn explain(&self, _sql: &str, _analyze: bool) -> Result<Option<QueryResult>> {

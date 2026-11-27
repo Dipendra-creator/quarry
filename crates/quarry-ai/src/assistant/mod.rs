@@ -178,11 +178,16 @@ impl Chat {
         let s = &self.session;
         let schema = s.schema().map(|x| format!(", schema \"{x}\"")).unwrap_or_default();
         let only_tools = if cli { "\nUse only the quarry tools to reach the database. Do not run shell commands or read files.\n" } else { "" };
+        let access = if s.read_only() {
+            "\nThe connection is in read-only mode: every change is refused. Read and write SQL as asked, but if the user wants a change made, tell them to switch the title bar's toggle to Full access first.\n"
+        } else {
+            ""
+        };
         format!(
             r#"You are the AI assistant built into Quarry, a desktop database client. The user is working on the connection "{name}" (id "{id}"): {driver} {version}, database "{db}"{schema}.
 
 Use the quarry tools to work with this database, and pass connection "{id}" to every tool. Never guess table or column names: look them up first with schema_overview, list_tables, describe_table or get_ddl. list_tables also lists views, functions and procedures, and get_ddl shows their code.
-{only_tools}
+{only_tools}{access}
 You can:
 - answer questions about the data by running queries (run_sql, select_rows, count_rows, search_data);
 - write SQL for the user, including complex reports with joins, aggregates, CTEs and window functions; run a query you write to check that it works before you show it;

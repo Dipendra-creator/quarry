@@ -105,6 +105,11 @@ impl Driver for SqliteDriver {
         Ok(())
     }
 
+    async fn set_read_only(&self, on: bool) -> Result<()> {
+        self.with(move |c| Ok(c.execute_batch(if on { "PRAGMA query_only = ON" } else { "PRAGMA query_only = OFF" })?))
+            .await
+    }
+
     async fn list_schemas(&self, _include_system: bool) -> Result<Vec<String>> {
         Ok(vec![])
     }

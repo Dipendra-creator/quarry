@@ -158,7 +158,7 @@ fn column_def(values: &[Value]) -> ColumnDef {
 impl DataView {
     pub fn new(session: Arc<Session>, item: Item, filters: Vec<Filter>, window: &mut Window, cx: &mut Context<Self>) -> Self {
         let limit = session.config.page_size.max(1);
-        let table = Self::make_grid(Grid::Data, item.kind == ItemKind::Table, vec![], window, cx);
+        let table = Self::make_grid(Grid::Data, item.kind == ItemKind::Table && !session.read_only(), vec![], window, cx);
         let limit_input = cx.new(|cx| InputState::new(window, cx).default_value(limit.to_string()));
         let offset_input = cx.new(|cx| InputState::new(window, cx).default_value("0"));
         let subs = vec![cx.subscribe_in(&table, window, |v, _, ev, window, cx| v.on_table_event(Grid::Data, ev, window, cx))];
@@ -273,8 +273,28 @@ impl DataView {
         .detach();
     }
 
+    /// Tables can be edited, but only with full access.
+    fn editable(&self) -> bool {
+        self.item.kind == ItemKind::Table && !self.session.read_only()
+    }
+
+    /// Follows the title bar's Read only / Full access toggle.
+    pub fn refresh_access(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.editing.is_some() {
+            self.finish_edit(false, window, cx);
+        }
+        let editable = self.editable();
+        for t in self.grids() {
+            t.update(cx, |t, cx| {
+                t.delegate_mut().editable = editable;
+                cx.notify();
+            });
+        }
+        cx.notify();
+    }
+
     fn set_structure(&mut self, s: TableStructure, window: &mut Window, cx: &mut Context<Self>) {
-        let editable = self.item.kind == ItemKind::Table;
+        let editable = self.editable();
         let headers = |h: &[&str]| h.iter().map(|n| ResultColumn { name: n.to_string(), type_name: String::new() }).collect::<Vec<_>>();
         let columns = Self::make_grid(Grid::Columns, editable, COLUMNS_READONLY.to_vec(), window, cx);
         columns.update(cx, |t, cx| {
@@ -976,7 +996,8 @@ impl DataView {
                 None => format!("{shown} rows"),
             }
         };
-        let editable = self.item.kind == ItemKind::Table;
+        let editable = self.editable();
+        let read_only_table = self.item.kind == ItemKind::Table && self.session.read_only();
         h_flex()
             .h(px(40.))
             .px(px(8.))
@@ -1012,6 +1033,20 @@ impl DataView {
             })
             .when(self.mode == Mode::Structure, |d| {
                 d.child(footer_button("ddl", cx).w(px(80.)).child("DDL").on_click(cx.listener(|v, _, window, cx| v.show_ddl(window, cx))))
+            })
+            .when(read_only_table, |d| {
+                d.child(
+                    h_flex()
+                        .id("read-only-hint")
+                        .gap(px(4.))
+                        .text_size(UI_TEXT)
+                        .text_color(p.secondary_text)
+                        .child(icon(IconName::Eye, 11., p.secondary_text))
+                        .child("Read only")
+                        .tooltip(|window, cx| {
+                            gpui_kit::component::tooltip::Tooltip::new("Switch the title bar's toggle to Full access to edit").build(window, cx)
+                        }),
+                )
             })
             .child(div().flex_1().flex().justify_center().text_size(UI_TEXT).text_color(p.text).when(self.mode == Mode::Data, |d| d.child(count)))
             .when(self.mode == Mode::Data, |d| {

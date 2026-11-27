@@ -108,6 +108,7 @@ impl WorkspaceWindow {
         let status_ix = (w.session.config.status_color as usize).min(5);
         let title = w.session.title();
         let tag = w.session.config.tag;
+        let read_only = w.session.read_only();
         let lock_icon = if safe == SafeMode::Silent { IconName::LockOpen } else { IconName::Lock };
         let on = |f: fn(&mut ConnWorkspace, &mut Window, &mut Context<ConnWorkspace>)| {
             let ws = ws.clone();
@@ -164,8 +165,10 @@ impl WorkspaceWindow {
             )
             .child(
                 div().flex_1().min_w(px(0.)).px(px(12.)).flex().justify_center().child(
+                    h_flex().min_w(px(0.)).gap(px(10.)).child(
                     h_flex()
                         .h(px(30.))
+                        .min_w(px(0.))
                         .max_w(px(560.))
                         .px(px(14.))
                         .gap(px(6.))
@@ -177,7 +180,14 @@ impl WorkspaceWindow {
                         .text_size(UI_TEXT)
                         .text_color(p.status_text[status_ix])
                         .child(div().truncate().child(title))
-                        .when(tag != quarry_core::ConnTag::None, |d| d.child(div().text_color(p.tag(tag)).child(format!("({})", tag.label())))),
+                        .when(tag != quarry_core::ConnTag::None, |d| d.child(div().flex_shrink_0().text_color(p.tag(tag)).child(format!("({})", tag.label())))),
+                    )
+                    .child({
+                        let ws = ws.clone();
+                        crate::widgets::access_toggle(read_only, cx, move |read_only, window, cx| {
+                            ws.update(cx, |w, cx| w.set_access(read_only, window, cx));
+                        })
+                    }),
                 ),
             )
             .child(
@@ -562,6 +572,57 @@ impl ConnWorkspace {
     pub fn ask_ai(&mut self, prompt: String, window: &mut Window, cx: &mut Context<Self>) {
         let panel = self.set_assistant(true, window, cx);
         panel.update(cx, |p, cx| p.send(prompt, window, cx));
+    }
+
+    /// The title bar's toggle: read-only mode, or full access to change data.
+    fn set_access(&mut self, read_only: bool, window: &mut Window, cx: &mut Context<Self>) {
+        if read_only == self.session.read_only() {
+            return;
+        }
+        if read_only && self.has_changes(cx) {
+            return prompt::error("Uncommitted changes", "Commit or discard your changes before switching to read-only mode.", window, cx);
+        }
+        let this = cx.entity().downgrade();
+        let apply = move |window: &mut Window, cx: &mut App| {
+            let _ = this.update(cx, |w, cx| {
+                let session = w.session.clone();
+                cx.spawn_in(window, async move |this, cx| {
+                    let r = db(async move { session.set_read_only(read_only).await }).await;
+                    let _ = this.update_in(cx, |w, window, cx| match r {
+                        Ok(()) => w.access_changed(window, cx),
+                        Err(e) => prompt::error("Could not switch mode", &format!("{e:#}"), window, cx),
+                    });
+                })
+                .detach();
+            });
+        };
+        if !read_only && self.session.config.tag == quarry_core::ConnTag::Production {
+            let name = self.session.config.display_name();
+            prompt::confirm(
+                "Full access",
+                &format!("{name} is tagged production. Allow changes to its data and structure?"),
+                "Allow changes",
+                window,
+                cx,
+                apply,
+            );
+        } else {
+            apply(window, cx);
+        }
+    }
+
+    /// Open tabs, the sidebar and the row detail follow the new mode.
+    fn access_changed(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let read_only = self.session.read_only();
+        for t in &self.tabs {
+            if let TabContent::Data(d) = &t.content {
+                d.update(cx, |d, cx| d.refresh_access(window, cx));
+            }
+        }
+        self.row_detail.update(cx, |r, cx| r.set_row(None, None, window, cx));
+        self.sidebar.update(cx, |_, cx| cx.notify());
+        self.log(if read_only { "-- read-only mode: changes are refused".into() } else { "-- full access: changes allowed".into() }, cx);
+        cx.notify();
     }
 
     fn set_safe_mode(&mut self, mode: SafeMode, cx: &mut Context<Self>) {

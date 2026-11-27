@@ -37,6 +37,17 @@ async fn postgres() {
     unsafe { std::env::set_var("QUARRY_CONFIG_DIR", std::env::temp_dir().join("quarry-live")) };
     let s = Session::connect(cfg.clone()).await.unwrap();
     assert!(s.server_version.starts_with("17") || !s.server_version.is_empty());
+    // Read-only by default; the server refuses writes a read can hide (nextval writes).
+    assert!(s.read_only());
+    assert!(s.execute("CREATE SEQUENCE ro_probe").await.is_err());
+    s.set_read_only(false).await.unwrap();
+    s.execute("CREATE SEQUENCE IF NOT EXISTS ro_probe").await.unwrap();
+    s.set_read_only(true).await.unwrap();
+    // (Temporary sequences would be allowed: PostgreSQL lets read-only transactions change those.)
+    let hidden = s.execute("SELECT nextval('ro_probe')").await;
+    assert!(hidden.is_err(), "the server refused a write inside a SELECT");
+    s.set_read_only(false).await.unwrap();
+    s.execute("DROP SEQUENCE ro_probe").await.unwrap();
     assert_eq!(s.schema().as_deref(), Some("public"));
     rows_ok(&s.run_script(
         "DROP SCHEMA IF EXISTS qt CASCADE; CREATE SCHEMA qt;
@@ -179,11 +190,12 @@ async fn postgres() {
     assert!(s.structure(&books).await.unwrap().column("qty").is_none());
 
     // Process list shows another connection, which can be cancelled and killed.
+    // Only the session opened here is stopped: the server may have other clients.
     let other = Session::connect(cfg.clone()).await.unwrap();
+    let pid = match &other.execute("SELECT pg_backend_pid()").await.unwrap().rows[0][0] { Value::Int(p) => *p, v => panic!("{v:?}") };
     let procs = s.processes().await.unwrap();
     let pid_col = procs.column_index("pid").unwrap();
-    assert!(procs.rows.len() >= 1);
-    let pid = match &procs.rows[0][pid_col] { Value::Int(p) => *p, v => panic!("{v:?}") };
+    assert!(procs.rows.iter().any(|r| r[pid_col] == Value::Int(pid)), "the other session is listed");
     s.kill(pid, true).await.unwrap();
     s.kill(pid, false).await.unwrap();
     drop(other);
@@ -197,7 +209,11 @@ async fn postgres() {
     s.switch_database("postgres").await.unwrap();
     s.execute("DROP DATABASE quarry_other").await.unwrap();
     s.reconnect().await.unwrap();
+    assert!(!s.read_only(), "a reconnect keeps full access");
     rows_ok(&s.run_script("DROP SCHEMA qt CASCADE", None).await);
+    s.set_read_only(true).await.unwrap();
+    s.reconnect().await.unwrap();
+    assert!(s.execute("CREATE TABLE ro_after_reconnect (a int)").await.is_err(), "a reconnect keeps read-only mode");
 }
 
 #[tokio::test]
@@ -206,6 +222,9 @@ async fn mysql() {
     unsafe { std::env::set_var("QUARRY_CONFIG_DIR", std::env::temp_dir().join("quarry-live")) };
     let s = Session::connect(cfg).await.unwrap();
     assert_eq!(s.database(), "shop");
+    assert!(s.read_only());
+    assert!(s.execute("CREATE TABLE ro_probe (a int)").await.is_err());
+    s.set_read_only(false).await.unwrap();
     assert_eq!(s.schema(), None);
     rows_ok(&s.run_script(
         "DROP TABLE IF EXISTS books; DROP TABLE IF EXISTS authors; DROP VIEW IF EXISTS cheap; DROP PROCEDURE IF EXISTS hello;
@@ -343,11 +362,14 @@ async fn sql_server() {
     unsafe { std::env::set_var("QUARRY_CONFIG_DIR", std::env::temp_dir().join("quarry-live")) };
     let admin = Session::connect(cfg.clone()).await.unwrap();
     assert!(!admin.server_version.is_empty());
+    assert!(admin.read_only() && admin.execute("CREATE TABLE ro_probe (a int)").await.is_err());
+    admin.set_read_only(false).await.unwrap();
     assert_eq!(admin.database(), "master");
     rows_ok(&admin.run_script("IF DB_ID('quarry_test') IS NOT NULL BEGIN ALTER DATABASE quarry_test SET SINGLE_USER WITH ROLLBACK IMMEDIATE; DROP DATABASE quarry_test; END; CREATE DATABASE quarry_test", None).await);
     let mut cfg = cfg;
     cfg.database = "quarry_test".into();
     let s = Session::connect(cfg.clone()).await.unwrap();
+    s.set_read_only(false).await.unwrap();
     assert_eq!(s.database(), "quarry_test");
     assert_eq!(s.schema().as_deref(), Some("dbo"));
 
@@ -532,12 +554,13 @@ async fn sql_server() {
     assert_eq!(s.schema().as_deref(), Some("qt"));
 
     // Processes and killing another session.
+    // Only the session opened here is killed: the server may have other clients.
     let other = Session::connect(cfg.clone()).await.unwrap();
+    let id = match &other.execute("SELECT @@SPID").await.unwrap().rows[0][0] { Value::Int(p) => *p, v => panic!("{v:?}") };
     let procs = s.processes().await.unwrap();
     let id_col = procs.column_index("id").unwrap();
-    assert!(!procs.rows.is_empty());
-    assert!(s.kill(1, true).await.is_err(), "cancel-only is not available");
-    let id = match &procs.rows[0][id_col] { Value::Int(p) => *p, v => panic!("{v:?}") };
+    assert!(procs.rows.iter().any(|r| r[id_col] == Value::Int(id)), "the other session is listed");
+    assert!(s.kill(id, true).await.is_err(), "cancel-only is not available");
     s.kill(id, false).await.unwrap();
     drop(other);
 

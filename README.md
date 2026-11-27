@@ -220,6 +220,12 @@ OpenAI API instead, open Preferences → AI (<kbd>Ctrl</kbd>+<kbd>,</kbd>).
   a reconnect. SQL Server has no per-session default schema, so there the editor says
   which schema unqualified names use and autocomplete inserts schema-qualified names.
 - **Over SSH**, with a password or a key, and host-key checking.
+- **Read only / Full access:** a toggle in the title bar of every connection, which
+  starts in **Read only**. Then nothing can change the database: no cell edits, no
+  structure edits, no INSERT/UPDATE/DELETE/DDL in the SQL editor, no imports, truncates,
+  drops or killed processes, and no changes by the AI assistant or MCP agents. PostgreSQL,
+  MySQL/MariaDB and SQLite connections are also put in the server's own read-only mode.
+  Connections tagged production ask before switching to Full access.
 - **Five safe-mode levels**, as in the original. Silent sends queries directly. Alert asks
   before sending. Safe requires typing the connection name. The "except read" variants
   skip the prompt for `SELECT`/`SHOW`/`EXPLAIN`.

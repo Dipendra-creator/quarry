@@ -189,6 +189,62 @@ pub fn flat_switch(
     }))
 }
 
+/// The title bar's Read only | Full access switch. `on_select(true)` asks
+/// for read-only mode, `on_select(false)` for full access.
+pub fn access_toggle(read_only: bool, cx: &App, on_select: impl Fn(bool, &mut Window, &mut App) + 'static) -> Div {
+    let p = cx.palette().clone();
+    let on_select = std::rc::Rc::new(on_select);
+    // Full access is drawn in a warning color: changes reach the database.
+    let full_access_bg: Hsla = rgb(0xD9480F).into();
+    let segment = |id: &'static str, icon_name: IconName, label: &'static str, tip: &'static str, selected: bool, bg: Hsla, value: bool| {
+        let cb = on_select.clone();
+        let fg = if selected { white() } else { p.secondary_text };
+        h_flex()
+            .id(id)
+            .h(px(26.))
+            .px(px(10.))
+            .gap(px(5.))
+            .rounded(px(13.))
+            .text_size(UI_TEXT)
+            .font_weight(FontWeight::MEDIUM)
+            .text_color(fg)
+            .when(selected, |d| d.bg(bg))
+            .when(!selected, |d| d.hover(|s| s.bg(p.capsule_hover)).on_click(move |_, window, cx| cb(value, window, cx)))
+            .child(icon(icon_name, 13., fg))
+            .child(label)
+            .tooltip(move |window, cx| gpui_kit::component::tooltip::Tooltip::new(tip).build(window, cx))
+    };
+    h_flex()
+        // Keep presses from reaching the title bar, which turns them into window drags.
+        .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
+        .h(px(34.))
+        .p(px(3.))
+        .gap(px(2.))
+        .flex_shrink_0()
+        .rounded(px(17.))
+        .border_1()
+        .border_color(p.button_border)
+        .bg(p.title_bar)
+        .child(segment(
+            "access-read-only",
+            IconName::Eye,
+            "Read only",
+            "Read only: data and structure can be viewed but not changed",
+            read_only,
+            p.accent,
+            true,
+        ))
+        .child(segment(
+            "access-full",
+            IconName::PencilLine,
+            "Full access",
+            "Full access: data and structure can be changed",
+            !read_only,
+            full_access_bg,
+            false,
+        ))
+}
+
 /// Rounded square standing in for a vendor logo.
 pub fn driver_badge(driver: DriverKind, size: f32, cx: &App) -> Div {
     div()

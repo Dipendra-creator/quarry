@@ -385,6 +385,7 @@ impl Sidebar {
                 let expanded = self.columns.contains_key(&key);
                 let fg = if selected { p.selection_text } else { p.text };
                 let this = cx.entity().downgrade();
+                let read_only = self.session.read_only();
                 h_flex()
                     .id(SharedString::from(format!("item-{key}-{:?}", item.kind)))
                     .w_full()
@@ -438,12 +439,16 @@ impl Sidebar {
                             })
                         };
                         let name = item.name().to_string();
-                        let mut m = menu
+                        let m = menu
                             .item(ev("Open in new tab", SidebarEvent::OpenNewTab))
                             .item(ev("Open structure", SidebarEvent::OpenStructure))
                             .item(ev("Show DDL", SidebarEvent::ShowDdl))
-                            .item(PopupMenuItem::new("Copy name").on_click(move |_, _, cx| cx.write_to_clipboard(ClipboardItem::new_string(name.clone()))))
-                            .separator();
+                            .item(PopupMenuItem::new("Copy name").on_click(move |_, _, cx| cx.write_to_clipboard(ClipboardItem::new_string(name.clone()))));
+                        // Import, truncate and delete only with full access.
+                        if read_only {
+                            return m;
+                        }
+                        let mut m = m.separator();
                         if item.kind == ItemKind::Table {
                             let this = this.clone();
                             m = m

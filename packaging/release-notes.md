@@ -1,5 +1,14 @@
 Native database client, SQL editor and AI assistant for PostgreSQL, MySQL, MariaDB, Microsoft SQL Server and SQLite. MIT licensed.
 
+## What's new in 0.2.2
+
+**Read only / Full access toggle.** Every connection now has a toggle in the title bar, and **starts in Read only**. In read-only mode nothing can change the database: the data grid and structure view cannot be edited, the SQL editor refuses statements that are not reads (UPDATE, DELETE, DROP, CREATE, …), sidebar Import / Truncate / Delete are hidden, processes cannot be killed, and the AI assistant and MCP agents are refused too. On PostgreSQL, MySQL, MariaDB and SQLite the connection itself is also switched to read-only, so even a write hidden inside a function call is refused by the database. Switch to **Full access** to make changes; connections tagged *production* ask first.
+
+**Fixes**
+
+- Keyboard shortcuts work in the connections window as soon as it opens, without clicking it first.
+- Running a query with Ctrl+Enter closes the autocomplete list.
+
 ## What's new in 0.2.1
 
 **The Claude Code and Codex assistants work when Quarry is opened from the Dock or Finder.** Apps opened that way on macOS (and from Linux desktop launchers) only get the system's basic PATH, so Quarry could not find a `claude` or `codex` installed with npm, Homebrew or their installers, and the assistant would not connect. Quarry now looks up programs on your login shell's PATH and in the usual install folders, the way your terminal does. The same fix lets backup and restore find `pg_dump`, `mysqldump` and `sqlcmd` from Homebrew.

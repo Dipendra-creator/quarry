@@ -62,7 +62,10 @@ impl Welcome {
             }),
             cx.observe_global::<AppState>(|_, cx| cx.notify()),
         ];
-        Self { search, selected: None, connecting: None, focus: cx.focus_handle(), _subs: subs }
+        // Focused from the start, so shortcuts (Ctrl+N, Ctrl+,) work before the first click.
+        let focus = cx.focus_handle();
+        focus.focus(window, cx);
+        Self { search, selected: None, connecting: None, focus, _subs: subs }
     }
 
     fn connections(&self, cx: &App) -> Vec<ConnectionConfig> {

@@ -44,6 +44,13 @@ pub struct Tool {
 pub trait WriteGate: Send + Sync {
     /// `sql` is what would run. An error refuses, with a message for the model.
     async fn allow(&self, session: &Session, sql: &str) -> Result<()>;
+
+    /// Whether a connection the tools open themselves starts with full
+    /// access. Connections otherwise start read-only, and in the app only
+    /// the user's title-bar toggle gives full access.
+    fn opens_writable(&self, _config: &ConnectionConfig) -> bool {
+        false
+    }
 }
 
 /// Changes only on connections in Silent safe mode: the standalone MCP
@@ -52,6 +59,12 @@ pub struct SafeModeGate;
 
 #[async_trait::async_trait]
 impl WriteGate for SafeModeGate {
+    /// Nobody can flip a toggle for the standalone server, so Silent
+    /// connections keep accepting changes, as documented.
+    fn opens_writable(&self, config: &ConnectionConfig) -> bool {
+        config.safe_mode == SafeMode::Silent
+    }
+
     async fn allow(&self, s: &Session, _: &str) -> Result<()> {
         if s.safe_mode() != SafeMode::Silent {
             bail!(
@@ -475,6 +488,7 @@ impl Toolbox {
                 if a.0.get("dry_run").and_then(Json::as_bool).unwrap_or(false) {
                     return Ok(json!({"sql": statements}));
                 }
+                s.ensure_writable()?;
                 self.gate.allow(&s, &statements.join("\n")).await?;
                 Ok(json!({"executed": s.apply_structure(&table, &changes).await?}))
             }
@@ -487,6 +501,7 @@ impl Toolbox {
                     (None, None) => bail!("give either csv or path"),
                 };
                 let rows = csv.lines().count().saturating_sub(1);
+                s.ensure_writable()?;
                 self.gate.allow(&s, &format!("-- insert {rows} CSV rows into {}", table.qualified())).await?;
                 let delimiter = a.opt_str("delimiter").and_then(|d| d.chars().next()).unwrap_or(',');
                 Ok(json!({"imported": s.import_csv(&table, &csv, delimiter, true).await?}))
@@ -599,7 +614,12 @@ impl Toolbox {
             return Ok(s);
         }
         let config = self.config(key)?;
-        self.sessions.connect(config).await
+        let writable = self.gate.opens_writable(&config);
+        let s = self.sessions.connect(config).await?;
+        if writable {
+            s.set_read_only(false).await?;
+        }
+        Ok(s)
     }
 
     fn table(&self, s: &Session, a: &Args) -> Result<TableRef> {
@@ -625,6 +645,8 @@ impl Toolbox {
         let s = self.session(a).await?;
         let script = a.str("sql")?;
         if !sql::is_read_only(script) {
+            // Refused here, before the user is asked to approve something that cannot run.
+            s.ensure_writable()?;
             self.gate.allow(&s, script).await?;
         }
         let limit = a.opt_u64("limit").map_or(DEFAULT_ROWS, |l| l as usize).min(MAX_ROWS);
@@ -661,6 +683,7 @@ impl Toolbox {
         if a.0.get("dry_run").and_then(Json::as_bool).unwrap_or(false) {
             return Ok(json!({"sql": statements}));
         }
+        s.ensure_writable()?;
         self.gate.allow(&s, &statements.join("\n")).await?;
         Ok(json!({"executed": s.apply_changes(&table, &changes, key_kind).await?}))
     }
@@ -793,7 +816,8 @@ book,12
         // The app serves its toolbox over the bridge, and its gate asks the user.
         let (gate, mut asks) = ApprovalGate::new(WritePolicy::Ask);
         let store = ConnectionStore::load_from(dir.join("connections.json")).unwrap();
-        let app = Arc::new(Toolbox::new(store, Arc::new(SessionManager::default())).with_gate(gate.clone()));
+        let app_sessions = Arc::new(SessionManager::default());
+        let app = Arc::new(Toolbox::new(store, app_sessions.clone()).with_gate(gate.clone()));
         bridge::serve(app).await.unwrap();
         let mut client = bridge::BridgeClient::connect(&bridge::info_path()).await.unwrap();
         let answers = tokio::spawn(async move {
@@ -806,6 +830,12 @@ book,12
             asked
         });
         let delete = json!({"connection": "Shop", "sql": "delete from items where id = 2"});
+        // In the app, connections start read-only: refused without asking the user.
+        let read_only = client.call("run_sql", delete.clone()).await.unwrap_err();
+        assert!(read_only.to_string().contains("read-only mode"), "{read_only}");
+        assert!(client.call("delete_rows", json!({"connection": "Shop", "table": "items", "keys": [{"id": 2}]})).await.unwrap_err().to_string().contains("read-only"));
+        // The user switches the title-bar toggle to Full access; now changes are asked about.
+        app_sessions.all()[0].set_read_only(false).await.unwrap();
         let refused = client.call("run_sql", delete.clone()).await.unwrap_err();
         assert!(refused.to_string().contains("declined"), "{refused}");
         assert_eq!(client.call("run_sql", delete.clone()).await.unwrap()[0]["rows_affected"], 1);

@@ -175,6 +175,12 @@ impl Driver for MyDriver {
         Ok(())
     }
 
+    async fn set_read_only(&self, on: bool) -> Result<()> {
+        let mode = if on { "READ ONLY" } else { "READ WRITE" };
+        self.conn.lock().await.query_drop(format!("SET SESSION TRANSACTION {mode}")).await?;
+        Ok(())
+    }
+
     async fn list_schemas(&self, include_system: bool) -> Result<Vec<String>> {
         // MySQL databases are its schemas; the sidebar uses databases instead.
         let dbs = self.list_databases().await?;

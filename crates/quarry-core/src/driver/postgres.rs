@@ -236,6 +236,12 @@ impl Driver for PgDriver {
         Ok(())
     }
 
+    async fn set_read_only(&self, on: bool) -> Result<()> {
+        let value = if on { "on" } else { "off" };
+        self.client.batch_execute(&format!("SET default_transaction_read_only = {value}")).await?;
+        Ok(())
+    }
+
     async fn list_items(&self, schema: Option<&str>) -> Result<Vec<Item>> {
         let schema = schema.unwrap_or("public");
         let rows = self

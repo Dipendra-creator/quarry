@@ -27,7 +27,13 @@ struct State {
     /// a reconnect must apply it again.
     schema_chosen: bool,
     safe_mode: SafeMode,
+    /// Read-only mode: only reads run. Every connection starts in it.
+    read_only: bool,
 }
+
+/// Why a change was refused in read-only mode, for people and for AI tools.
+pub const READ_ONLY_REFUSAL: &str =
+    "is in read-only mode, so nothing was changed. Switch the title bar's toggle to Full access to change data or structure";
 
 pub struct Session {
     pub config: ConnectionConfig,
@@ -78,7 +84,14 @@ impl Session {
         let server_version = driver.server_version().await.unwrap_or_default();
         let database = driver.current_database().await.unwrap_or_default();
         let session = Arc::new(Session {
-            state: Mutex::new(State { database, schema: None, home_schema: None, schema_chosen: false, safe_mode: config.safe_mode }),
+            state: Mutex::new(State {
+                database,
+                schema: None,
+                home_schema: None,
+                schema_chosen: false,
+                safe_mode: config.safe_mode,
+                read_only: true,
+            }),
             config,
             connect_config,
             _tunnel: tunnel,
@@ -89,6 +102,8 @@ impl Session {
         // Bootstrap commands first: a `SET search_path` there picks the starting schema.
         session.run_startup_commands(&*session.driver()).await?;
         session.reset_schema().await?;
+        // After the bootstrap commands, which may need to write.
+        session.driver().set_read_only(true).await?;
         Ok(session)
     }
 
@@ -145,6 +160,7 @@ impl Session {
         if let Some(schema) = chosen {
             fresh.use_schema(&schema).await?;
         }
+        fresh.set_read_only(self.read_only()).await?;
         Ok(fresh)
     }
 
@@ -177,6 +193,26 @@ impl Session {
         let mut state = self.state.lock().unwrap();
         state.schema = Some(schema.to_string());
         state.schema_chosen = true;
+        Ok(())
+    }
+
+    /// Whether only reads may run (the title bar's Read only / Full access toggle).
+    pub fn read_only(&self) -> bool {
+        self.state.lock().unwrap().read_only
+    }
+
+    /// Switches between read-only mode and full access.
+    pub async fn set_read_only(&self, on: bool) -> Result<()> {
+        self.driver().set_read_only(on).await?;
+        self.state.lock().unwrap().read_only = on;
+        Ok(())
+    }
+
+    /// An error unless changes are allowed (full access).
+    pub fn ensure_writable(&self) -> Result<()> {
+        if self.read_only() {
+            anyhow::bail!("{} {READ_ONLY_REFUSAL}.", self.config.display_name());
+        }
         Ok(())
     }
 
@@ -299,8 +335,12 @@ impl Session {
         Ok(v.display().parse().unwrap_or_default())
     }
 
-    /// Runs one statement exactly as given and records it in history.
+    /// Runs one statement exactly as given and records it in history. In
+    /// read-only mode, only statements that just read are run.
     pub async fn execute(&self, statement: &str) -> Result<QueryResult> {
+        if !sql::is_read_only(statement) {
+            self.ensure_writable()?;
+        }
         let _ = self.history.append(&self.config.id, &self.database(), statement);
         self.driver().execute(statement).await
     }
@@ -330,6 +370,7 @@ impl Session {
 
     /// Commits staged edits in one transaction; returns the statements run.
     pub async fn apply_changes(&self, table: &TableRef, changes: &[RowChange], key: KeyKind) -> Result<Vec<String>> {
+        self.ensure_writable()?;
         let statements = self.changes_sql(table, changes, key);
         if statements.is_empty() {
             return Ok(statements);
@@ -344,6 +385,7 @@ impl Session {
     /// Applies structure edits (columns, indexes). PostgreSQL and SQLite run
     /// them in one transaction; MySQL commits each DDL statement on its own.
     pub async fn apply_structure(&self, table: &TableRef, changes: &[crate::alter::StructureChange]) -> Result<Vec<String>> {
+        self.ensure_writable()?;
         let statements = self.dialect().structure_sql(table, changes)?;
         if statements.is_empty() {
             return Ok(statements);
@@ -358,6 +400,7 @@ impl Session {
     /// Imports CSV text whose header row names columns of `table`, in one
     /// transaction. Returns the number of rows inserted.
     pub async fn import_csv(&self, table: &TableRef, csv: &str, delimiter: char, empty_as_null: bool) -> Result<usize> {
+        self.ensure_writable()?;
         let structure = self.structure(table).await?;
         let rows = crate::import::parse_csv(csv, delimiter);
         let statements = crate::import::insert_statements(self.dialect(), table, &structure, &rows, empty_as_null, 500)?;
@@ -387,9 +430,12 @@ impl Session {
             (DriverKind::Sqlite, _) => format!("EXPLAIN QUERY PLAN {stmt}"),
             (DriverKind::SqlServer, _) => anyhow::bail!("the SQL Server driver did not return a plan"),
         };
-        match self.execute(&sql).await {
+        // Straight to the driver: the statement was checked above, and MariaDB's
+        // ANALYZE does not look like a read to the read-only check.
+        let _ = self.history.append(&self.config.id, &self.database(), &sql);
+        match self.driver().execute(&sql).await {
             // FORMAT=TREE needs MySQL 8.0.16; older servers get the table form.
-            Err(_) if self.kind() == DriverKind::MySql && !analyze => self.execute(&format!("EXPLAIN {stmt}")).await,
+            Err(_) if self.kind() == DriverKind::MySql && !analyze => self.driver().execute(&format!("EXPLAIN {stmt}")).await,
             r => r,
         }
     }
@@ -416,6 +462,7 @@ impl Session {
 
     /// Stops a server session's running statement (`cancel`) or the whole session.
     pub async fn kill(&self, id: i64, cancel_only: bool) -> Result<()> {
+        self.ensure_writable()?;
         let sql = match (self.kind(), cancel_only) {
             (DriverKind::Postgres, true) => format!("SELECT pg_cancel_backend({id})"),
             (DriverKind::Postgres, false) => format!("SELECT pg_terminate_backend({id})"),
@@ -515,6 +562,18 @@ mod tests {
             ..Default::default()
         };
         let s = Session::connect(cfg).await.unwrap();
+
+        // Connections start read-only: writes are refused by Quarry and by SQLite itself.
+        assert!(s.read_only());
+        let blocked = s.run_script("select 1; INSERT INTO people (name) VALUES ('x')", None).await;
+        assert!(matches!(&blocked[1].outcome, Outcome::Error(e) if e.contains("read-only mode")), "{blocked:?}");
+        assert!(s.driver().execute("INSERT INTO people (name) VALUES ('x')").await.is_err(), "query_only refuses writes");
+        let t = s.table_ref(None, "people");
+        assert!(s.apply_changes(&t, &[RowChange::Insert { values: vec![] }], KeyKind::PrimaryKey).await.is_err());
+        assert!(s.import_csv(&t, "name\nx", ',', true).await.is_err());
+        assert_eq!(s.count(&t, &[]).await.unwrap(), 0, "reads still work");
+        s.set_read_only(false).await.unwrap();
+
         let out = s
             .run_script("INSERT INTO people (name, city) VALUES ('Ada', 'London'), ('Linus', 'Helsinki'); select * from people", Some(1))
             .await;
@@ -522,7 +581,6 @@ mod tests {
         assert!(matches!(&out[1].outcome, Outcome::Result(r) if r.rows.len() == 1));
         assert_eq!(out[1].statement, "select * from people LIMIT 1");
 
-        let t = s.table_ref(None, "people");
         let page = s
             .browse(&BrowseRequest {
                 table: t.clone(),

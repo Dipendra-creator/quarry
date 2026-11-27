@@ -68,6 +68,8 @@ async fn assistant_reads_answers_and_asks_before_changes() {
         session.execute("CREATE DATABASE IF NOT EXISTS quarry_ai_test").await.unwrap();
         session.switch_database("quarry_ai_test").await.unwrap();
     }
+    // Connections start read-only; the test changes data, as with the title-bar toggle on Full access.
+    session.set_read_only(false).await.unwrap();
     let setup = "DROP TABLE IF EXISTS fruit; CREATE TABLE fruit (id int PRIMARY KEY, name varchar(20), price decimal(6,2));
                  INSERT INTO fruit VALUES (1, 'apple', 1.20), (2, 'mango', 3.75), (3, 'kiwi', 0.80), (4, 'durian', 9.90)";
     for o in session.run_script(setup, None).await {

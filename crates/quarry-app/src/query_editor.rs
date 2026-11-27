@@ -188,6 +188,8 @@ Find the cause and give me a corrected query:
         if script.trim().is_empty() || self.running {
             return;
         }
+        // Ctrl+Enter while autocomplete is showing runs the query; close the list.
+        self.editor.update(cx, |e, cx| e.dismiss_completion_overlay(cx));
         let this = cx.entity().downgrade();
         let session = self.session.clone();
         let limit = self.limit;

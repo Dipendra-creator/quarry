@@ -4,7 +4,7 @@ use std::sync::Arc;
 
 use gpui_kit::component::button::{Button, ButtonVariants as _};
 use gpui_kit::component::table::{DataTable, TableState};
-use gpui_kit::component::{Sizable as _, WindowExt as _, h_flex, v_flex};
+use gpui_kit::component::{Disableable as _, Sizable as _, WindowExt as _, h_flex, v_flex};
 use gpui_kit::*;
 use quarry_core::{Session, Value};
 
@@ -85,6 +85,7 @@ impl ProcessList {
 impl Render for ProcessList {
     fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let p = cx.palette().clone();
+        let read_only = self.session.read_only();
         v_flex()
             .gap(px(8.))
             .child(div().h(px(380.)).child(DataTable::new(&self.table).stripe(true).xsmall()))
@@ -93,8 +94,9 @@ impl Render for ProcessList {
                     .gap(px(8.))
                     .child(div().flex_1().text_size(UI_TEXT).text_color(p.secondary_text).child(self.status.clone()))
                     .child(Button::new("p-refresh").label("Refresh").small().on_click(cx.listener(|v, _, window, cx| v.refresh(window, cx))))
-                    .child(Button::new("p-cancel").label("Cancel Query").small().on_click(cx.listener(|v, _, window, cx| v.kill(true, window, cx))))
-                    .child(Button::new("p-kill").label("Kill Process").small().danger().on_click(cx.listener(|v, _, window, cx| v.kill(false, window, cx)))),
+                    // Stopping other sessions changes the server: full access only.
+                    .child(Button::new("p-cancel").label("Cancel Query").small().disabled(read_only).on_click(cx.listener(|v, _, window, cx| v.kill(true, window, cx))))
+                    .child(Button::new("p-kill").label("Kill Process").small().danger().disabled(read_only).on_click(cx.listener(|v, _, window, cx| v.kill(false, window, cx)))),
             )
     }
 }
