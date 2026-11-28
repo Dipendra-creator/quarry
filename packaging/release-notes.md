@@ -1,5 +1,9 @@
 Native database client, SQL editor and AI assistant for PostgreSQL, MySQL, MariaDB, Microsoft SQL Server and SQLite. MIT licensed.
 
+## What's new in 0.2.3
+
+**Fixes a crash when switching a connection to Full access.** In 0.2.2, clicking **Full access** in the title bar closed Quarry (connections tagged production, which ask first, were not affected). Switching between Read only and Full access now works both ways.
+
 ## What's new in 0.2.2
 
 **Read only / Full access toggle.** Every connection now has a toggle in the title bar, and **starts in Read only**. In read-only mode nothing can change the database: the data grid and structure view cannot be edited, the SQL editor refuses statements that are not reads (UPDATE, DELETE, DROP, CREATE, …), sidebar Import / Truncate / Delete are hidden, processes cannot be killed, and the AI assistant and MCP agents are refused too. On PostgreSQL, MySQL, MariaDB and SQLite the connection itself is also switched to read-only, so even a write hidden inside a function call is refused by the database. Switch to **Full access** to make changes; connections tagged *production* ask first.

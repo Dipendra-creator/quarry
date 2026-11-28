@@ -582,33 +582,37 @@ impl ConnWorkspace {
         if read_only && self.has_changes(cx) {
             return prompt::error("Uncommitted changes", "Commit or discard your changes before switching to read-only mode.", window, cx);
         }
-        let this = cx.entity().downgrade();
-        let apply = move |window: &mut Window, cx: &mut App| {
-            let _ = this.update(cx, |w, cx| {
-                let session = w.session.clone();
-                cx.spawn_in(window, async move |this, cx| {
-                    let r = db(async move { session.set_read_only(read_only).await }).await;
-                    let _ = this.update_in(cx, |w, window, cx| match r {
-                        Ok(()) => w.access_changed(window, cx),
-                        Err(e) => prompt::error("Could not switch mode", &format!("{e:#}"), window, cx),
-                    });
-                })
-                .detach();
-            });
-        };
         if !read_only && self.session.config.tag == quarry_core::ConnTag::Production {
             let name = self.session.config.display_name();
+            let this = cx.entity().downgrade();
+            // The dialog answers later, outside this update, so updating the workspace there is fine.
             prompt::confirm(
                 "Full access",
                 &format!("{name} is tagged production. Allow changes to its data and structure?"),
                 "Allow changes",
                 window,
                 cx,
-                apply,
+                move |window, cx| {
+                    let _ = this.update(cx, |w, cx| w.apply_access(read_only, window, cx));
+                },
             );
         } else {
-            apply(window, cx);
+            // Already inside this workspace's update (the toggle's click): continue here,
+            // since updating the workspace again from within its own update panics.
+            self.apply_access(read_only, window, cx);
         }
+    }
+
+    fn apply_access(&mut self, read_only: bool, window: &mut Window, cx: &mut Context<Self>) {
+        let session = self.session.clone();
+        cx.spawn_in(window, async move |this, cx| {
+            let r = db(async move { session.set_read_only(read_only).await }).await;
+            let _ = this.update_in(cx, |w, window, cx| match r {
+                Ok(()) => w.access_changed(window, cx),
+                Err(e) => prompt::error("Could not switch mode", &format!("{e:#}"), window, cx),
+            });
+        })
+        .detach();
     }
 
     /// Open tabs, the sidebar and the row detail follow the new mode.
