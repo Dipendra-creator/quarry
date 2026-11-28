@@ -54,6 +54,9 @@ through `quarry-ai`.
     prints values back in the same syntax, splits scripts and classifies reads.
   - Engines that do not speak SQL answer `Driver::browse`, `count`, `browse_text` and
     `changes_text` themselves; the defaults return `None` and leave them to `Dialect`.
+    They also answer `documents`, `document_save` and `document_delete`, which feed the
+    app's JSON view (`document_view.rs`): MongoDB documents and Redis values as
+    pretty-printed text, saved back through statements the user sees first.
   - SQL Server uses `tiberius` on one connection behind a mutex. Batches run inside
     `BEGIN TRANSACTION … COMMIT` with `XACT_ABORT` on. Plans come from `SHOWPLAN_TEXT`
     (or `STATISTICS PROFILE` for analyze) through `Driver::explain`, because they are

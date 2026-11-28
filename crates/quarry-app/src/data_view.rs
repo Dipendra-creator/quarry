@@ -83,6 +83,8 @@ pub enum DataViewEvent {
     RowSelected(Option<RowSnapshot>),
     OpenTable(Item, Vec<Filter>),
     OpenSql(String),
+    /// Show this item as documents (MongoDB, Redis) instead.
+    ShowDocuments,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -1022,6 +1024,12 @@ impl DataView {
             .bg(p.window_secondary)
             .border_t_1()
             .border_color(p.separator)
+            // MongoDB and Redis show documents first; the grid is the alternative.
+            .when(!self.session.kind().is_sql(), |d| {
+                d.child(footer_button("dv-json", cx).child(icon(IconName::Braces, 10., p.icon)).child("JSON").on_click(cx.listener(|_, _, _, cx| {
+                    cx.emit(DataViewEvent::ShowDocuments);
+                })))
+            })
             // A Redis key has a value, not a structure. MongoDB shows its
             // sampled fields and indexes there, read-only.
             .when(self.session.kind() != quarry_core::DriverKind::Redis, |d| {

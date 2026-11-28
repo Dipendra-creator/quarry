@@ -8,7 +8,7 @@ use async_trait::async_trait;
 
 use crate::changes::{KeyKind, RowChange};
 use crate::model::{ConnectionConfig, DriverKind};
-use crate::query::{BrowseRequest, Filter, QueryResult};
+use crate::query::{BrowseRequest, DocumentPage, DocumentRequest, Filter, QueryResult};
 use crate::schema::{Item, TableRef, TableStructure};
 
 mod mongo;
@@ -82,6 +82,22 @@ pub trait Driver: Send + Sync {
 
     /// Rows the filters keep, if this engine counts on its own.
     async fn count(&self, _table: &TableRef, _filters: &[Filter]) -> Option<Result<u64>> {
+        None
+    }
+
+    /// Documents (MongoDB) or a key's value (Redis) for the document view.
+    async fn documents(&self, _req: &DocumentRequest) -> Option<Result<DocumentPage>> {
+        None
+    }
+
+    /// Statements that save a document edited as text: `id` is the
+    /// document's (from [`DocumentPage`]), `None` for a new one.
+    async fn document_save(&self, _table: &TableRef, _id: Option<&str>, _text: &str) -> Option<Result<Vec<String>>> {
+        None
+    }
+
+    /// Statements that delete a document of the document view.
+    fn document_delete(&self, _table: &TableRef, _id: &str) -> Option<Result<Vec<String>>> {
         None
     }
 

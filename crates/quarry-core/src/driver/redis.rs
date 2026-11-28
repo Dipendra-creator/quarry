@@ -19,7 +19,7 @@ use super::Driver;
 use crate::changes::{ColumnValues, KeyKind, RowChange};
 use crate::commands::{command_line, split_args};
 use crate::model::{ConnectionConfig, DriverKind, SslMode};
-use crate::query::{BrowseRequest, Filter, QueryResult, ResultColumn, count_matching, filter_sort_page};
+use crate::query::{BrowseRequest, DocumentEntry, DocumentPage, DocumentRequest, Filter, QueryResult, ResultColumn, count_matching, filter_sort_page};
 use crate::schema::{ColumnInfo, Item, ItemKind, TableRef, TableStructure};
 use crate::value::Value;
 
@@ -214,6 +214,10 @@ fn stream_rows(entries: &[Rv]) -> (Vec<String>, Vec<Vec<Value>>) {
     let mut columns = vec!["id".to_string()];
     columns.extend(fields);
     (columns, rows)
+}
+
+fn text_of(v: Option<Rv>) -> Option<String> {
+    v.as_ref().and_then(text)
 }
 
 fn arr(v: Rv) -> Vec<Rv> {
@@ -469,6 +473,139 @@ fn edit_commands(key: &str, kind: ItemKind, changes: &[RowChange]) -> Result<Vec
     Ok(out)
 }
 
+/// A key's value as JSON-ready BSON, in Redis's order: a hash as an
+/// object, a list or set as an array, a sorted set as member → score, a
+/// stream as an array of entries.
+fn value_bson(kind: ItemKind, columns: &[String], rows: &[Vec<Value>]) -> mongodb::bson::Bson {
+    use mongodb::bson::{Bson, Document};
+    let s = |v: &Value| Bson::String(v.display());
+    let number = |v: &Value| match v {
+        Value::Float(f) if f.fract() == 0.0 && f.abs() < 2e9 => Bson::Int32(*f as i32),
+        Value::Float(f) => Bson::Double(*f),
+        Value::Int(i) => i32::try_from(*i).map(Bson::Int32).unwrap_or(Bson::Double(*i as f64)),
+        other => s(other),
+    };
+    match kind {
+        ItemKind::HashKey => Bson::Document(rows.iter().map(|r| (r[0].display(), s(&r[1]))).collect::<Document>()),
+        ItemKind::ListKey => Bson::Array(rows.iter().map(|r| s(&r[1])).collect()),
+        ItemKind::SetKey => Bson::Array(rows.iter().map(|r| s(&r[0])).collect()),
+        ItemKind::ZSetKey => Bson::Document(rows.iter().map(|r| (r[0].display(), number(&r[1]))).collect::<Document>()),
+        ItemKind::StreamKey => Bson::Array(
+            rows.iter()
+                .map(|r| Bson::Document(columns.iter().zip(r).filter(|(_, v)| !matches!(v, Value::Null)).map(|(c, v)| (c.clone(), s(v))).collect()))
+                .collect(),
+        ),
+        _ => rows.first().and_then(|r| r.first()).map(s).unwrap_or(Bson::Null),
+    }
+}
+
+fn type_label(kind: ItemKind) -> &'static str {
+    match kind {
+        ItemKind::StringKey => "string",
+        ItemKind::HashKey => "hash",
+        ItemKind::ListKey => "list",
+        ItemKind::SetKey => "set",
+        ItemKind::ZSetKey => "sorted set",
+        ItemKind::StreamKey => "stream",
+        ItemKind::JsonKey => "JSON",
+        _ => "other",
+    }
+}
+
+/// Text holding JSON, pretty-printed; anything else as it is.
+fn pretty_if_json(text: &str) -> String {
+    let t = text.trim_start();
+    if t.starts_with(['{', '[']) {
+        if let Ok(v) = serde_json::from_str::<serde_json::Value>(text) {
+            return serde_json::to_string_pretty(&v).unwrap_or_else(|_| text.to_string());
+        }
+    }
+    text.to_string()
+}
+
+/// A JSON value as one Redis argument.
+fn scalar(b: &mongodb::bson::Bson) -> String {
+    use mongodb::bson::Bson;
+    match b {
+        Bson::String(s) => s.clone(),
+        Bson::Int32(n) => n.to_string(),
+        Bson::Int64(n) => n.to_string(),
+        Bson::Double(f) => f.to_string(),
+        Bson::Boolean(v) => v.to_string(),
+        Bson::Null => String::new(),
+        other => other.clone().into_relaxed_extjson().to_string(),
+    }
+}
+
+/// Commands that replace a key's value with `text`, the JSON the document
+/// view shows, keeping its time to live.
+fn rewrite_commands(key: &str, kind: ItemKind, text: &str, ttl_ms: i64) -> Result<Vec<String>> {
+    use mongodb::bson::Bson;
+    let line = |parts: Vec<String>| command_line(&parts);
+    let mut out = Vec::new();
+    match kind {
+        ItemKind::StringKey => {
+            // JSON is stored compact, as it was before pretty-printing.
+            let value = match serde_json::from_str::<serde_json::Value>(text) {
+                Ok(v) if text.trim_start().starts_with(['{', '[']) => v.to_string(),
+                _ => text.to_string(),
+            };
+            return Ok(vec![line(vec!["SET".into(), key.into(), value, "KEEPTTL".into()])]);
+        }
+        ItemKind::JsonKey => {
+            let v: serde_json::Value = serde_json::from_str(text).map_err(|e| anyhow!("not valid JSON: {e}"))?;
+            return Ok(vec![line(vec!["JSON.SET".into(), key.into(), "$".into(), v.to_string()])]);
+        }
+        _ => {}
+    }
+    let value = crate::mongo_shell::parse_value(text).map_err(|e| anyhow!("not valid JSON: {e}"))?;
+    out.push(line(vec!["DEL".into(), key.into()]));
+    let chunked = |cmd: &str, args: Vec<String>, per: usize, out: &mut Vec<String>| {
+        for chunk in args.chunks(per) {
+            let mut parts = vec![cmd.to_string(), key.to_string()];
+            parts.extend(chunk.iter().cloned());
+            out.push(command_line(&parts));
+        }
+    };
+    match (kind, value) {
+        (ItemKind::HashKey, Bson::Document(d)) => chunked("HSET", d.iter().flat_map(|(k, v)| [k.clone(), scalar(v)]).collect(), 200, &mut out),
+        (ItemKind::ListKey, Bson::Array(a)) => chunked("RPUSH", a.iter().map(scalar).collect(), 100, &mut out),
+        (ItemKind::SetKey, Bson::Array(a)) => chunked("SADD", a.iter().map(scalar).collect(), 100, &mut out),
+        (ItemKind::ZSetKey, Bson::Document(d)) => {
+            let mut args = Vec::new();
+            for (member, score) in &d {
+                let score = scalar(score);
+                if score.parse::<f64>().is_err() {
+                    bail!("the score of {member:?} must be a number");
+                }
+                args.extend([score, member.clone()]);
+            }
+            chunked("ZADD", args, 200, &mut out);
+        }
+        (ItemKind::StreamKey, Bson::Array(entries)) => {
+            for e in entries {
+                let Bson::Document(d) = e else { bail!("each stream entry is an object: {{\"id\": …, \"field\": …}}") };
+                let id = d.get("id").map(scalar).filter(|s| !s.is_empty()).unwrap_or_else(|| "*".into());
+                let mut parts = vec!["XADD".to_string(), key.to_string(), id];
+                for (k, v) in d.iter().filter(|(k, _)| *k != "id") {
+                    parts.extend([k.clone(), scalar(v)]);
+                }
+                if parts.len() < 5 {
+                    bail!("a stream entry needs at least one field");
+                }
+                out.push(command_line(&parts));
+            }
+        }
+        (ItemKind::HashKey | ItemKind::ZSetKey, _) => bail!("a {} is a JSON object", type_label(kind)),
+        (ItemKind::ListKey | ItemKind::SetKey | ItemKind::StreamKey, _) => bail!("a {} is a JSON array", type_label(kind)),
+        _ => bail!("Quarry cannot edit this type of key; use the command editor"),
+    }
+    if ttl_ms > 0 && out.len() > 1 {
+        out.push(line(vec!["PEXPIRE".into(), key.into(), ttl_ms.to_string()]));
+    }
+    Ok(out)
+}
+
 /// Commands that recreate a key, for "Show DDL" and copying a key elsewhere.
 fn recreate_commands(key: &str, kind: ItemKind, columns: &[String], rows: &[Vec<Value>]) -> Vec<String> {
     let s = |v: &Value| v.display();
@@ -685,6 +822,68 @@ impl Driver for RedisDriver {
         Ok(())
     }
 
+    async fn documents(&self, req: &DocumentRequest) -> Option<Result<DocumentPage>> {
+        Some(
+            async {
+                let key = &req.table.name;
+                let kind = self.key_type(key).await?;
+                let (columns, rows) = self.elements(key, kind).await?;
+                let text = match kind {
+                    ItemKind::StringKey | ItemKind::JsonKey => pretty_if_json(&rows.first().and_then(|r| r.first()).map(Value::display).unwrap_or_default()),
+                    _ => crate::mongo_shell::to_shell_pretty(&value_bson(kind, &columns, &rows)),
+                };
+                let ttl = text_of(self.run(&["TTL", key]).await.ok()).and_then(|s| s.parse::<i64>().ok()).unwrap_or(-1);
+                let mut info = vec![
+                    ("Type".to_string(), type_label(kind).to_string()),
+                    ("Elements".to_string(), rows.len().to_string()),
+                    ("TTL".to_string(), if ttl >= 0 { format!("{ttl} s") } else { "none".into() }),
+                ];
+                if let Some(bytes) = text_of(self.run(&["MEMORY", "USAGE", key]).await.ok()) {
+                    info.push(("Size".into(), format!("{bytes} bytes")));
+                }
+                if let Some(enc) = text_of(self.run(&["OBJECT", "ENCODING", key]).await.ok()) {
+                    info.push(("Encoding".into(), enc));
+                }
+                let read = match kind {
+                    ItemKind::StringKey => "GET",
+                    ItemKind::HashKey => "HGETALL",
+                    ItemKind::ListKey => "LRANGE",
+                    ItemKind::SetKey => "SMEMBERS",
+                    ItemKind::ZSetKey => "ZRANGE",
+                    ItemKind::StreamKey => "XRANGE",
+                    ItemKind::JsonKey => "JSON.GET",
+                    _ => "TYPE",
+                };
+                let statement = match read {
+                    "LRANGE" | "ZRANGE" => format!("{read} {} 0 -1{}", command_line(&[key]), if read == "ZRANGE" { " WITHSCORES" } else { "" }),
+                    "XRANGE" => format!("XRANGE {} - +", command_line(&[key])),
+                    _ => format!("{read} {}", command_line(&[key])),
+                };
+                Ok(DocumentPage { documents: vec![DocumentEntry { id: Some(key.clone()), text }], total: 1, statement, info })
+            }
+            .await,
+        )
+    }
+
+    async fn document_save(&self, table: &TableRef, id: Option<&str>, text: &str) -> Option<Result<Vec<String>>> {
+        Some(
+            async {
+                if id.is_none() {
+                    bail!("add keys from the + menu or the command editor");
+                }
+                let key = &table.name;
+                let kind = self.key_type(key).await?;
+                let ttl = text_of(self.run(&["PTTL", key]).await.ok()).and_then(|s| s.parse::<i64>().ok()).unwrap_or(-1);
+                rewrite_commands(key, kind, text, ttl)
+            }
+            .await,
+        )
+    }
+
+    fn document_delete(&self, table: &TableRef, _id: &str) -> Option<Result<Vec<String>>> {
+        Some(Ok(vec![command_line(&["DEL", &table.name])]))
+    }
+
     async fn browse(&self, req: &BrowseRequest) -> Option<Result<QueryResult>> {
         Some(
             async {
@@ -790,6 +989,24 @@ mod tests {
         assert_eq!(r.rows.len(), 2, "keys plus the next cursor");
         let args: Vec<String> = ["GET", "k"].iter().map(|s| s.to_string()).collect();
         assert_eq!(reply_result(&args, Rv::Nil).rows, vec![vec![Value::Null]]);
+    }
+
+    #[test]
+    fn values_show_as_json_and_save_back() {
+        let rows = vec![vec![Value::Text("ann".into()), Value::Float(1520.0)], vec![Value::Text("bob".into()), Value::Float(2.5)]];
+        let text = crate::mongo_shell::to_shell_pretty(&value_bson(ItemKind::ZSetKey, &["member".into(), "score".into()], &rows));
+        assert_eq!(text, "{\n  \"ann\": 1520,\n  \"bob\": 2.5\n}");
+        assert!(serde_json::from_str::<serde_json::Value>(&text).is_ok(), "the view shows plain JSON");
+        assert_eq!(rewrite_commands("board", ItemKind::ZSetKey, &text, 5000).unwrap(), vec!["DEL board", "ZADD board 1520 ann 2.5 bob", "PEXPIRE board 5000"]);
+        let hash = rewrite_commands("u", ItemKind::HashKey, r#"{"name": "Ann Lee", "age": 42}"#, -1).unwrap();
+        assert_eq!(hash, vec!["DEL u", "HSET u name \"Ann Lee\" age 42"]);
+        assert_eq!(rewrite_commands("q", ItemKind::ListKey, r#"["a", "b"]"#, -1).unwrap(), vec!["DEL q", "RPUSH q a b"]);
+        assert_eq!(rewrite_commands("s", ItemKind::StringKey, "{\n  \"a\": 1\n}", -1).unwrap(), vec![r#"SET s "{\"a\":1}" KEEPTTL"#], "JSON strings saved compact");
+        assert_eq!(rewrite_commands("s", ItemKind::StringKey, "plain text", -1).unwrap(), vec!["SET s \"plain text\" KEEPTTL"]);
+        assert!(rewrite_commands("u", ItemKind::HashKey, "[1, 2]", -1).is_err(), "a hash is an object");
+        assert!(rewrite_commands("z", ItemKind::ZSetKey, r#"{"a": "high"}"#, -1).is_err(), "scores are numbers");
+        let stream = rewrite_commands("e", ItemKind::StreamKey, r#"[{"id": "1-0", "kind": "login"}, {"kind": "logout"}]"#, -1).unwrap();
+        assert_eq!(stream, vec!["DEL e", "XADD e 1-0 kind login", "XADD e * kind logout"]);
     }
 
     #[test]

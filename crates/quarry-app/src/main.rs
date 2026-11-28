@@ -9,6 +9,7 @@ mod backup;
 mod completion;
 mod connection_form;
 mod data_view;
+mod document_view;
 mod grid;
 mod guard;
 mod picker;

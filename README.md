@@ -198,25 +198,30 @@ OpenAI API instead, open Preferences → AI (<kbd>Ctrl</kbd>+<kbd>,</kbd>).
 
 ### Redis and MongoDB
 
-The same grid, filters, editor and AI work on the two most used non-SQL databases.
+The two most used non-SQL databases open in a **JSON view**: documents and values as
+pretty-printed, colored JSON, edited as JSON. A **Table** toggle shows the same data in
+the grid, with its filters and inline editing, when you want rows and columns.
 
+- **MongoDB** (and Atlas, DocumentDB): collections and views in the sidebar. Opening one
+  shows its documents as JSON cards, `ObjectId(…)` and `ISODate(…)` included, 20 per page,
+  with a filter (`{age: {$gt: 30}}`) and a sort (`{name: 1}`). Edit a document as JSON
+  (shell syntax works), add one, or delete one: Quarry writes the `replaceOne`,
+  `insertOne` or `deleteOne`, shows it first, and keeps each field's type, so an ObjectId
+  stays an ObjectId and a date stays a date. The editor runs mongosh-style calls
+  (`db.users.find({age: {$gt: 30}}).sort({name: 1})`, `aggregate`, `updateMany`,
+  `createIndex`, `db.runCommand`, `show collections`) with `ObjectId()`, `ISODate()` and
+  the other shell helpers. The Structure tab shows the fields sampled from the
+  collection, with their types, and the indexes. Paste a `mongodb+srv://` connection
+  string into Host to connect to Atlas.
 - **Redis** (and Valkey, KeyDB, Dragonfly): the sidebar lists keys by type (strings,
-  hashes, lists, sets, sorted sets, streams). Opening a key shows its value as rows: a
-  hash's fields, a list's items, a set's members, a sorted set's members with scores, a
-  stream's entries. Edit, add and delete them like table rows. Quarry writes the Redis
-  commands (`HSET`, `LSET`, `ZADD`, …), shows them in the preview, and applies them in one
-  `MULTI`/`EXEC`. The editor runs redis-cli style commands, one per line, with results
-  shaped as grids (`HGETALL` as fields and values, `INFO` by section), and autocompletes
-  commands and key names. "Show as commands" prints the commands that recreate a key.
-- **MongoDB** (and Atlas, DocumentDB): collections and views in the sidebar, documents as
-  rows, top-level fields as columns (sampled from the collection, with their types), and
-  nested documents and arrays as editable shell literals. The filter bar becomes a query,
-  with a raw JSON query option. Edits become `insertOne`, `updateOne` and `deleteOne` and
-  keep each field's type: an ObjectId stays an ObjectId and a date stays a date. The
-  editor runs mongosh-style calls (`db.users.find({age: {$gt: 30}}).sort({name: 1})`,
-  `aggregate`, `updateMany`, `createIndex`, `db.runCommand`, `show collections`) with
-  `ObjectId()`, `ISODate()` and the other shell helpers. Paste a `mongodb+srv://`
-  connection string into Host to connect to Atlas.
+  hashes, lists, sets, sorted sets, streams). Opening a key shows its value as key-value
+  JSON (a hash as an object, a list or set as an array, a sorted set as member → score, a
+  stream as its entries, a JSON string pretty-printed) with its type, size, encoding and
+  time to live. Edit the whole value as JSON: Quarry rewrites the key in one
+  `MULTI`/`EXEC` and keeps its time to live. In the Table view, each field, item or member
+  is a row, and edits become `HSET`, `LSET`, `ZADD` and the like. The editor runs
+  redis-cli style commands, one per line, with results shaped as grids (`HGETALL` as
+  fields and values, `INFO` by section), and autocompletes commands and key names.
 
 ### Write SQL
 

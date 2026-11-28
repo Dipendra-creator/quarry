@@ -1071,3 +1071,99 @@ async fn mongodb() {
     s.reconnect().await.unwrap();
     assert!(s.execute("db.people.drop()").await.is_err(), "a reconnect keeps read-only mode");
 }
+
+/// The document view: a Redis key's value as JSON, edited and saved back.
+#[tokio::test]
+async fn redis_documents() {
+    let Some(mut cfg) = config("QUARRY_TEST_REDIS", DriverKind::Redis, "db8") else { return };
+    cfg.password = cfg.password.filter(|p| !p.is_empty());
+    unsafe { std::env::set_var("QUARRY_CONFIG_DIR", std::env::temp_dir().join("quarry-live")) };
+    let s = Session::connect(cfg).await.unwrap();
+    s.set_read_only(false).await.unwrap();
+    rows_ok(&s.run_script("FLUSHDB\nHSET user:1 name Ann city Oslo\nZADD board 10 ann 2.5 bob\nSET doc \"{\\\"a\\\":1,\\\"b\\\":[1,2]}\"\nEXPIRE user:1 3600", None).await);
+    let req = |name: &str| quarry_core::query::DocumentRequest { table: s.table_ref(None, name), filter: String::new(), sort: String::new(), skip: 0, limit: 20 };
+
+    let page = s.documents(&req("user:1")).await.unwrap();
+    assert_eq!(page.documents[0].text, "{\n  \"city\": \"Oslo\",\n  \"name\": \"Ann\"\n}", "fields in a stable, sorted order");
+    assert!(page.info.iter().any(|(k, v)| k == "Type" && v == "hash"), "{:?}", page.info);
+    assert!(page.info.iter().any(|(k, v)| k == "TTL" && v.ends_with(" s")), "{:?}", page.info);
+    let page = s.documents(&req("board")).await.unwrap();
+    assert_eq!(page.documents[0].text, "{\n  \"bob\": 2.5,\n  \"ann\": 10\n}", "sorted by score");
+    let page = s.documents(&req("doc")).await.unwrap();
+    assert_eq!(page.documents[0].text, "{\n  \"a\": 1,\n  \"b\": [\n    1,\n    2\n  ]\n}", "JSON strings pretty-printed");
+
+    // Save an edited hash: the value is replaced and the TTL kept.
+    let user = s.table_ref(None, "user:1");
+    let statements = s.document_save(&user, Some("user:1"), "{\"name\": \"Ann Lee\", \"plan\": \"pro\"}").await.unwrap();
+    assert_eq!(statements[0], "DEL user:1");
+    s.run_statements(&statements).await.unwrap();
+    let r = s.execute("HGETALL user:1").await.unwrap();
+    assert_eq!(r.rows.len(), 2);
+    let ttl = s.execute("TTL user:1").await.unwrap().rows[0][0].display().parse::<i64>().unwrap();
+    assert!(ttl > 3000, "time to live kept: {ttl}");
+    let statements = s.document_save(&s.table_ref(None, "doc"), Some("doc"), "{\n  \"a\": 2\n}").await.unwrap();
+    s.run_statements(&statements).await.unwrap();
+    assert_eq!(s.execute("GET doc").await.unwrap().rows[0][0], Value::Text("{\"a\":2}".into()));
+    assert!(s.document_save(&user, Some("user:1"), "[1, 2]").await.is_err(), "a hash is an object");
+
+    s.run_statements(&s.document_delete(&user, "user:1").unwrap()).await.unwrap();
+    assert_eq!(s.execute("EXISTS user:1").await.unwrap().rows[0][0], Value::Int(0));
+    s.set_read_only(true).await.unwrap();
+    assert!(s.run_statements(&["DEL board".to_string()]).await.is_err(), "read-only mode refuses document edits");
+    s.set_read_only(false).await.unwrap();
+    s.execute("FLUSHDB").await.unwrap();
+}
+
+/// The document view: MongoDB documents as shell JSON, edited and saved back.
+#[tokio::test]
+async fn mongodb_documents() {
+    let Some(mut cfg) = config("QUARRY_TEST_MONGO", DriverKind::MongoDb, "quarry_docs") else { return };
+    cfg.password = cfg.password.filter(|p| !p.is_empty());
+    unsafe { std::env::set_var("QUARRY_CONFIG_DIR", std::env::temp_dir().join("quarry-live")) };
+    let s = Session::connect(cfg).await.unwrap();
+    s.set_read_only(false).await.unwrap();
+    rows_ok(&s.run_script(
+        r#"db.dropDatabase()
+        db.people.insertMany([
+          {_id: ObjectId("65a1b2c3d4e5f60718293a01"), name: "Ann", age: 41, joined: ISODate("2020-01-02T03:04:05Z"), tags: ["a", "b"]},
+          {_id: ObjectId("65a1b2c3d4e5f60718293a02"), name: "Bob", age: 29},
+          {_id: ObjectId("65a1b2c3d4e5f60718293a03"), name: "Cy", age: 35}
+        ])"#,
+        None,
+    ).await);
+    let people = s.table_ref(None, "people");
+    let req = |filter: &str, sort: &str, skip: u64| quarry_core::query::DocumentRequest { table: people.clone(), filter: filter.into(), sort: sort.into(), skip, limit: 2 };
+
+    let page = s.documents(&req("", "{age: -1}", 0)).await.unwrap();
+    assert_eq!(page.total, 3);
+    assert_eq!(page.documents.len(), 2, "one page");
+    let ann = &page.documents[0];
+    assert_eq!(ann.id.as_deref(), Some("ObjectId(\"65a1b2c3d4e5f60718293a01\")"));
+    assert_eq!(
+        ann.text,
+        "{\n  \"_id\": ObjectId(\"65a1b2c3d4e5f60718293a01\"),\n  \"name\": \"Ann\",\n  \"age\": 41,\n  \"joined\": ISODate(\"2020-01-02T03:04:05Z\"),\n  \"tags\": [\"a\", \"b\"]\n}"
+    );
+    assert_eq!(s.documents(&req("", "{age: -1}", 2)).await.unwrap().documents.len(), 1, "the next page");
+    let page = s.documents(&req("{age: {$lt: 30}}", "", 0)).await.unwrap();
+    assert_eq!((page.total, page.documents.len()), (1, 1));
+    assert!(page.statement.contains("find({\"age\": {\"$lt\": 30}})"), "{}", page.statement);
+    assert!(s.documents(&req("{age: ", "", 0)).await.is_err(), "a bad filter says so");
+
+    // Edit Ann's document as text: types survive, _id stays.
+    let edited = ann.text.replace("\"age\": 41", "\"age\": 42").replace("\"tags\": [\"a\", \"b\"]", "\"tags\": [\"a\"], \"plan\": \"pro\"");
+    let statements = s.document_save(&people, ann.id.as_deref(), &edited).await.unwrap();
+    assert!(statements[0].contains(".replaceOne({\"_id\": ObjectId(\"65a1b2c3d4e5f60718293a01\")}"), "{statements:?}");
+    s.run_statements(&statements).await.unwrap();
+    let r = s.execute(r#"db.people.aggregate([{$match: {name: "Ann"}}, {$project: {_id: 0, age: 1, plan: 1, j: {$type: "$joined"}}}])"#).await.unwrap();
+    let get = |c: &str| r.rows[0][r.columns.iter().position(|x| x.name == c).unwrap()].display();
+    assert_eq!((get("age"), get("plan"), get("j")), ("42".to_string(), "pro".to_string(), "date".to_string()));
+    assert!(s.document_save(&people, ann.id.as_deref(), &edited.replace("3a01", "3a09")).await.is_err(), "_id cannot change");
+
+    // Add and delete.
+    let statements = s.document_save(&people, None, "{name: 'Dee', age: NumberInt(19)}").await.unwrap();
+    s.run_statements(&statements).await.unwrap();
+    assert_eq!(s.count(&people, &[]).await.unwrap(), 4);
+    s.run_statements(&s.document_delete(&people, "ObjectId(\"65a1b2c3d4e5f60718293a02\")").unwrap()).await.unwrap();
+    assert_eq!(s.count(&people, &[]).await.unwrap(), 3);
+    s.execute("db.dropDatabase()").await.unwrap();
+}

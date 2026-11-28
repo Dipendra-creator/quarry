@@ -15,6 +15,7 @@ use quarry_core::{Filter, Item, ItemKind, SafeMode, Session};
 use crate::actions::*;
 use crate::assistant::{AssistantEvent, AssistantPanel};
 use crate::data_view::{DataView, DataViewEvent, Mode, RowSnapshot};
+use crate::document_view::{DocumentView, DocumentViewEvent};
 use crate::picker::{self, PickerItem};
 use crate::query_editor::{QueryEditor, QueryEvent};
 use crate::row_detail::RowDetail;
@@ -276,6 +277,19 @@ pub enum WorkspaceEvent {
 enum TabContent {
     Data(Entity<DataView>),
     Query(Entity<QueryEditor>),
+    /// MongoDB documents or a Redis key's value, as JSON.
+    Documents(Entity<DocumentView>),
+}
+
+impl TabContent {
+    /// The table, collection or key a tab shows.
+    fn item(&self, cx: &App) -> Option<Item> {
+        match self {
+            TabContent::Data(d) => Some(d.read(cx).item.clone()),
+            TabContent::Documents(v) => Some(v.read(cx).item.clone()),
+            TabContent::Query(_) => None,
+        }
+    }
 }
 
 struct Tab {
@@ -394,7 +408,7 @@ impl ConnWorkspace {
             return;
         }
         if filters.is_empty() {
-            if let Some(i) = self.tabs.iter().position(|t| matches!(&t.content, TabContent::Data(d) if d.read(cx).item == item)) {
+            if let Some(i) = self.tabs.iter().position(|t| t.content.item(cx).as_ref() == Some(&item)) {
                 if new_tab {
                     self.tabs[i].preview = false;
                 }
@@ -402,18 +416,23 @@ impl ConnWorkspace {
                 return;
             }
         }
-        let view = cx.new(|cx| DataView::new(self.session.clone(), item, filters, window, cx));
-        self._subs.push(cx.subscribe_in(&view, window, |this, view, ev: &DataViewEvent, window, cx| match ev {
-            DataViewEvent::Changed => cx.notify(),
-            DataViewEvent::Log(sql) => this.log(sql.clone(), cx),
-            DataViewEvent::RowSelected(snap) => this.show_row(snap.clone(), Some(view.downgrade()), window, cx),
-            DataViewEvent::OpenTable(item, filters) => this.open_item(item.clone(), filters.clone(), true, window, cx),
-            DataViewEvent::OpenSql(sql) => this.open_sql("Query".into(), sql.clone(), None, window, cx),
-        }));
-        let tab = Tab { content: TabContent::Data(view), preview: !new_tab };
-        let reuse = self
-            .active_tab
-            .filter(|i| self.tabs.get(*i).is_some_and(|t| t.preview && matches!(&t.content, TabContent::Data(d) if !d.read(cx).has_changes(cx))));
+        // MongoDB and Redis open as documents; the grid is a click away.
+        let content = if !self.session.kind().is_sql() && filters.is_empty() {
+            TabContent::Documents(self.make_documents(item, window, cx))
+        } else {
+            TabContent::Data(self.make_data(item, filters, window, cx))
+        };
+        let tab = Tab { content, preview: !new_tab };
+        let reuse = self.active_tab.filter(|i| {
+            self.tabs.get(*i).is_some_and(|t| {
+                t.preview
+                    && match &t.content {
+                        TabContent::Data(d) => !d.read(cx).has_changes(cx),
+                        TabContent::Documents(_) => true,
+                        TabContent::Query(_) => false,
+                    }
+            })
+        });
         match reuse {
             Some(i) if !new_tab => {
                 self.tabs[i] = tab;
@@ -423,6 +442,57 @@ impl ConnWorkspace {
                 self.tabs.push(tab);
                 self.activate(self.tabs.len() - 1, window, cx);
             }
+        }
+    }
+
+    fn make_data(&mut self, item: Item, filters: Vec<Filter>, window: &mut Window, cx: &mut Context<Self>) -> Entity<DataView> {
+        let view = cx.new(|cx| DataView::new(self.session.clone(), item, filters, window, cx));
+        self._subs.push(cx.subscribe_in(&view, window, |this, view, ev: &DataViewEvent, window, cx| match ev {
+            DataViewEvent::Changed => cx.notify(),
+            DataViewEvent::Log(sql) => this.log(sql.clone(), cx),
+            DataViewEvent::RowSelected(snap) => this.show_row(snap.clone(), Some(view.downgrade()), window, cx),
+            DataViewEvent::OpenTable(item, filters) => this.open_item(item.clone(), filters.clone(), true, window, cx),
+            DataViewEvent::OpenSql(sql) => this.open_sql("Query".into(), sql.clone(), None, window, cx),
+            DataViewEvent::ShowDocuments => {
+                if view.read(cx).has_changes(cx) {
+                    return prompt::error("Uncommitted changes", "Commit or discard the staged changes before switching to JSON.", window, cx);
+                }
+                let item = view.read(cx).item.clone();
+                this.switch_view(&item, true, window, cx);
+            }
+        }));
+        view
+    }
+
+    fn make_documents(&mut self, item: Item, window: &mut Window, cx: &mut Context<Self>) -> Entity<DocumentView> {
+        let view = cx.new(|cx| DocumentView::new(self.session.clone(), item, window, cx));
+        self._subs.push(cx.subscribe_in(&view, window, |this, view, ev: &DocumentViewEvent, window, cx| match ev {
+            DocumentViewEvent::Log(s) => this.log(s.clone(), cx),
+            DocumentViewEvent::OpenSql(s) => this.open_sql("Query".into(), s.clone(), None, window, cx),
+            DocumentViewEvent::ShowTable => {
+                let item = view.read(cx).item.clone();
+                this.switch_view(&item, false, window, cx);
+            }
+        }));
+        view
+    }
+
+    /// Shows an open item as documents or as the table grid, in its tab.
+    fn switch_view(&mut self, item: &Item, documents: bool, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(i) = self.tabs.iter().position(|t| t.content.item(cx).as_ref() == Some(item)) else { return };
+        self.tabs[i].content = if documents {
+            TabContent::Documents(self.make_documents(item.clone(), window, cx))
+        } else {
+            TabContent::Data(self.make_data(item.clone(), vec![], window, cx))
+        };
+        self.tabs[i].preview = false;
+        self.activate(i, window, cx);
+    }
+
+    fn active_documents(&self) -> Option<Entity<DocumentView>> {
+        match self.active_tab.and_then(|i| self.tabs.get(i)).map(|t| &t.content) {
+            Some(TabContent::Documents(v)) => Some(v.clone()),
+            _ => None,
         }
     }
 
@@ -475,6 +545,7 @@ impl ConnWorkspace {
         self.row_detail.update(cx, |r, cx| r.set_row(None, None, window, cx));
         match self.tabs.get(i).map(|t| &t.content) {
             Some(TabContent::Data(d)) => d.read(cx).focus_handle(cx).focus(window, cx),
+            Some(TabContent::Documents(v)) => v.read(cx).focus_handle(cx).focus(window, cx),
             Some(TabContent::Query(q)) => {
                 let h = q.read(cx).editor_focus(cx);
                 window.focus(&h, cx);
@@ -624,8 +695,10 @@ impl ConnWorkspace {
     fn access_changed(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let read_only = self.session.read_only();
         for t in &self.tabs {
-            if let TabContent::Data(d) = &t.content {
-                d.update(cx, |d, cx| d.refresh_access(window, cx));
+            match &t.content {
+                TabContent::Data(d) => d.update(cx, |d, cx| d.refresh_access(window, cx)),
+                TabContent::Documents(v) => v.update(cx, |_, cx| cx.notify()),
+                TabContent::Query(_) => {}
             }
         }
         self.row_detail.update(cx, |r, cx| r.set_row(None, None, window, cx));
@@ -667,6 +740,9 @@ impl ConnWorkspace {
     fn reload(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         if let Some(d) = self.active_data() {
             d.update(cx, |d, cx| d.reload(window, cx));
+        }
+        if let Some(v) = self.active_documents() {
+            v.update(cx, |v, cx| v.reload(window, cx));
         }
     }
 
@@ -825,12 +901,13 @@ impl ConnWorkspace {
             .border_color(p.separator)
             .overflow_x_scroll()
             .children(self.tabs.iter().enumerate().map(|(i, t)| {
-                let (title, dirty, query) = match &t.content {
+                let (title, dirty, tab_icon) = match &t.content {
                     TabContent::Data(d) => {
                         let d = d.read(cx);
-                        (d.title(), d.has_changes(cx), false)
+                        (d.title(), d.has_changes(cx), IconName::Table)
                     }
-                    TabContent::Query(q) => (q.read(cx).title.clone(), false, true),
+                    TabContent::Query(q) => (q.read(cx).title.clone(), false, IconName::FileCode),
+                    TabContent::Documents(v) => (v.read(cx).title(), false, IconName::Braces),
                 };
                 let active = Some(i) == self.active_tab;
                 h_flex()
@@ -847,7 +924,7 @@ impl ConnWorkspace {
                     .text_color(p.text)
                     .when(active, |d| d.bg(p.tab_selected))
                     .hover(|s| s.bg(p.tab_selected))
-                    .child(icon(if query { IconName::FileCode } else { IconName::Table }, 11., p.secondary_text))
+                    .child(icon(tab_icon, 11., p.secondary_text))
                     .child(div().flex_1().truncate().when(t.preview, |d| d.italic()).child(if dirty { format!("{title} *") } else { title }))
                     .child(
                         div()
@@ -949,6 +1026,7 @@ impl Render for ConnWorkspace {
         let content: AnyElement = match self.active_tab.and_then(|i| self.tabs.get(i)).map(|t| &t.content) {
             Some(TabContent::Data(d)) => d.clone().into_any_element(),
             Some(TabContent::Query(q)) => q.clone().into_any_element(),
+            Some(TabContent::Documents(v)) => v.clone().into_any_element(),
             None => placeholder(
                 if self.tabs.is_empty() {
                     empty_hint(self.session.kind(), cx)
@@ -969,7 +1047,8 @@ impl Render for ConnWorkspace {
             .child(div().flex_1().overflow_hidden().child(content))
             .when(self.show_console, |d| d.child(self.render_console(cx)));
         // The row detail pane can be dragged wider for long values.
-        let main = if self.show_detail {
+        // Documents carry their own fields; the row detail has nothing to show.
+        let main = if self.show_detail && self.active_documents().is_none() {
             h_resizable("detail-split")
                 .child(resizable_panel().child(center))
                 .child(resizable_panel().size(px(300.)).size_range(px(220.)..px(720.)).child(self.row_detail.clone()))
@@ -986,6 +1065,9 @@ impl Render for ConnWorkspace {
             .on_action(cx.listener(|w, _: &InsertRow, window, cx| {
                 if let Some(d) = w.active_data() {
                     d.update(cx, |d, cx| d.add_row(window, cx));
+                }
+                if let Some(v) = w.active_documents() {
+                    v.update(cx, |v, cx| v.add_document(window, cx));
                 }
             }))
             .on_action(cx.listener(|w, _: &DuplicateRow, window, cx| {

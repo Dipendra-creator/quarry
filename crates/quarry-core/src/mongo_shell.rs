@@ -481,6 +481,53 @@ pub fn to_shell(b: &Bson) -> String {
     }
 }
 
+/// [`to_shell`] over several lines, two spaces per level, as the document
+/// view shows it. Short arrays of plain values stay on one line.
+pub fn to_shell_pretty(b: &Bson) -> String {
+    fn go(b: &Bson, level: usize, out: &mut String) {
+        let pad = |n: usize| "  ".repeat(n);
+        match b {
+            Bson::Document(d) if !d.is_empty() => {
+                out.push_str("{\n");
+                for (i, (k, v)) in d.iter().enumerate() {
+                    out.push_str(&pad(level + 1));
+                    out.push_str(&serde_json::to_string(k).unwrap_or_default());
+                    out.push_str(": ");
+                    go(v, level + 1, out);
+                    if i + 1 < d.len() {
+                        out.push(',');
+                    }
+                    out.push('\n');
+                }
+                out.push_str(&pad(level));
+                out.push('}');
+            }
+            Bson::Array(a) if !a.is_empty() => {
+                let inline = to_shell(b);
+                if inline.len() <= 72 && !a.iter().any(|v| matches!(v, Bson::Document(_) | Bson::Array(_))) {
+                    out.push_str(&inline);
+                    return;
+                }
+                out.push_str("[\n");
+                for (i, v) in a.iter().enumerate() {
+                    out.push_str(&pad(level + 1));
+                    go(v, level + 1, out);
+                    if i + 1 < a.len() {
+                        out.push(',');
+                    }
+                    out.push('\n');
+                }
+                out.push_str(&pad(level));
+                out.push(']');
+            }
+            other => out.push_str(&to_shell(other)),
+        }
+    }
+    let mut out = String::new();
+    go(b, 0, &mut out);
+    out
+}
+
 /// Splits a script at top-level `;` and at line breaks that start a new
 /// `db.`, `show` or `use` statement. Chained calls on their own lines
 /// (`.sort(…)`) stay with their statement.

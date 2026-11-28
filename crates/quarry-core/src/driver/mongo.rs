@@ -22,8 +22,8 @@ use mongodb::{Client, IndexModel};
 use super::Driver;
 use crate::changes::{ColumnValues, KeyKind, RowChange};
 use crate::model::{ConnectionConfig, DriverKind, SslMode};
-use crate::mongo_shell::{self, Command, Target, parse_value, to_shell};
-use crate::query::{ANY_COLUMN, BrowseRequest, Filter, FilterOp, QueryResult, RAW_SQL, ResultColumn};
+use crate::mongo_shell::{self, Command, Target, parse_value, to_shell, to_shell_pretty};
+use crate::query::{ANY_COLUMN, BrowseRequest, DocumentEntry, DocumentPage, DocumentRequest, Filter, FilterOp, QueryResult, RAW_SQL, ResultColumn};
 use crate::schema::{ColumnInfo, IndexInfo, Item, ItemKind, TableRef, TableStructure};
 use crate::value::Value;
 
@@ -313,6 +313,18 @@ fn query(filters: &[Filter], fields: &[(String, String)]) -> Result<Document> {
         },
         _ => doc! { "$and": and },
     })
+}
+
+/// A filter or sort typed in the document view; empty is `{}`.
+fn shell_doc(text: &str, what: &str) -> Result<Document> {
+    if text.trim().is_empty() {
+        return Ok(Document::new());
+    }
+    match parse_value(text) {
+        Ok(Bson::Document(d)) => Ok(d),
+        Ok(_) => bail!("the {what} is a document, such as {{age: {{$gt: 30}}}}"),
+        Err(e) => bail!("{what}: {e}"),
+    }
 }
 
 fn arg_doc(args: &[Bson], i: usize) -> Result<Document> {
@@ -868,6 +880,61 @@ impl Driver for MongoDriver {
             }
             .await,
         )
+    }
+
+    async fn documents(&self, req: &DocumentRequest) -> Option<Result<DocumentPage>> {
+        Some(
+            async {
+                let name = &req.table.name;
+                let filter = shell_doc(&req.filter, "filter")?;
+                let sort = shell_doc(&req.sort, "sort")?;
+                let coll = self.collection(name);
+                let mut action = coll.find(filter.clone()).skip(req.skip).limit(req.limit as i64);
+                if !sort.is_empty() {
+                    action = action.sort(sort.clone());
+                }
+                let docs: Vec<Document> = action.await?.try_collect().await?;
+                let total = coll.count_documents(filter.clone()).await?;
+                let statement = format!(
+                    "db.getCollection({}).find({}){}",
+                    serde_json::to_string(name)?,
+                    to_shell(&Bson::Document(filter)),
+                    if sort.is_empty() { String::new() } else { format!(".sort({})", to_shell(&Bson::Document(sort))) }
+                );
+                let documents = docs
+                    .into_iter()
+                    .map(|d| DocumentEntry { id: d.get("_id").map(to_shell), text: to_shell_pretty(&Bson::Document(d)) })
+                    .collect();
+                Ok(DocumentPage { documents, total, statement, info: vec![] })
+            }
+            .await,
+        )
+    }
+
+    async fn document_save(&self, table: &TableRef, id: Option<&str>, text: &str) -> Option<Result<Vec<String>>> {
+        Some((|| {
+            let Bson::Document(doc) = parse_value(text).map_err(|e| anyhow!(e))? else { bail!("a document is an object: {{ … }}") };
+            let coll = format!("db.getCollection({})", serde_json::to_string(&table.name)?);
+            Ok(vec![match id {
+                Some(id) => {
+                    let id = parse_value(id).map_err(|e| anyhow!(e))?;
+                    if doc.get("_id").is_some_and(|new| *new != id) {
+                        bail!("_id cannot be changed; add a new document and delete this one");
+                    }
+                    let mut replacement = doc;
+                    replacement.remove("_id");
+                    format!("{coll}.replaceOne({{\"_id\": {}}}, {})", to_shell(&id), to_shell(&Bson::Document(replacement)))
+                }
+                None => format!("{coll}.insertOne({})", to_shell(&Bson::Document(doc))),
+            }])
+        })())
+    }
+
+    fn document_delete(&self, table: &TableRef, id: &str) -> Option<Result<Vec<String>>> {
+        Some((|| {
+            let id = parse_value(id).map_err(|e| anyhow!(e))?;
+            Ok(vec![format!("db.getCollection({}).deleteOne({{\"_id\": {}}})", serde_json::to_string(&table.name)?, to_shell(&id))])
+        })())
     }
 
     fn browse_text(&self, req: &BrowseRequest) -> Option<Result<String>> {

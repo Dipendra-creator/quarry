@@ -330,6 +330,45 @@ impl Session {
         self.driver().execute(&sql).await
     }
 
+    /// Documents or a key's value for the document view (MongoDB, Redis).
+    pub async fn documents(&self, req: &crate::query::DocumentRequest) -> Result<crate::query::DocumentPage> {
+        match self.driver().documents(req).await {
+            Some(r) => r,
+            None => anyhow::bail!("{} has no document view", self.kind().label()),
+        }
+    }
+
+    /// Statements that save a document edited as text, for the preview.
+    pub async fn document_save(&self, table: &TableRef, id: Option<&str>, text: &str) -> Result<Vec<String>> {
+        match self.driver().document_save(table, id, text).await {
+            Some(r) => r,
+            None => anyhow::bail!("{} has no document view", self.kind().label()),
+        }
+    }
+
+    /// Statements that delete a document of the document view.
+    pub fn document_delete(&self, table: &TableRef, id: &str) -> Result<Vec<String>> {
+        match self.driver().document_delete(table, id) {
+            Some(r) => r,
+            None => anyhow::bail!("{} has no document view", self.kind().label()),
+        }
+    }
+
+    /// Runs statements the user approved (document edits) as one batch,
+    /// recorded in history; writes need full access.
+    pub async fn run_statements(&self, statements: &[String]) -> Result<()> {
+        if statements.is_empty() {
+            return Ok(());
+        }
+        if !statements.iter().all(|s| sql::is_read_only_for(self.kind(), s)) {
+            self.ensure_writable()?;
+        }
+        for s in statements {
+            let _ = self.history.append(&self.config.id, &self.database(), s);
+        }
+        self.driver().execute_batch(statements).await
+    }
+
     /// The statement a browse runs, written for the editor: SQL, or a
     /// MongoDB `find()`.
     pub fn browse_text(&self, req: &BrowseRequest, columns: &[String]) -> Result<String> {

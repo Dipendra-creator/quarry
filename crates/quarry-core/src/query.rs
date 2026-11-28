@@ -242,6 +242,37 @@ fn default_limit() -> u32 {
     300
 }
 
+/// What the document view asks for: MongoDB documents matching a query, or
+/// a Redis key's value. `filter` and `sort` are shell literals (`{age: 1}`).
+#[derive(Clone, Debug)]
+pub struct DocumentRequest {
+    pub table: crate::schema::TableRef,
+    pub filter: String,
+    pub sort: String,
+    pub skip: u64,
+    pub limit: u64,
+}
+
+/// One document as the document view shows it.
+#[derive(Clone, Debug, PartialEq)]
+pub struct DocumentEntry {
+    /// What edits and deletes address: a MongoDB `_id` literal, a Redis key.
+    pub id: Option<String>,
+    /// Pretty-printed JSON or shell literal.
+    pub text: String,
+}
+
+#[derive(Clone, Debug, Default)]
+pub struct DocumentPage {
+    pub documents: Vec<DocumentEntry>,
+    /// Documents matching the filter (not just this page).
+    pub total: u64,
+    /// The call that read them, for "open in editor".
+    pub statement: String,
+    /// Facts shown above them: a Redis key's type, TTL, size.
+    pub info: Vec<(String, String)>,
+}
+
 /// Filters, sorts and pages rows in memory, with the filter bar's meaning,
 /// for engines that cannot do it on the server (a Redis hash's fields).
 /// "Raw SQL" filters do not apply here and are ignored.
