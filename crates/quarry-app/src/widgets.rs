@@ -247,6 +247,11 @@ pub fn access_toggle(read_only: bool, cx: &App, on_select: impl Fn(bool, &mut Wi
 
 /// Rounded square standing in for a vendor logo.
 pub fn driver_badge(driver: DriverKind, size: f32, cx: &App) -> Div {
+    badge(driver.badge(), cx.palette().driver(driver), size)
+}
+
+/// Rounded square with two letters, standing in for a vendor logo.
+pub fn badge(text: &'static str, color: Hsla, size: f32) -> Div {
     div()
         .size(px(size))
         .flex_shrink_0()
@@ -254,11 +259,11 @@ pub fn driver_badge(driver: DriverKind, size: f32, cx: &App) -> Div {
         .items_center()
         .justify_center()
         .rounded(px(size * 0.22))
-        .bg(cx.palette().driver(driver))
+        .bg(color)
         .text_color(white())
         .font_weight(FontWeight::BOLD)
         .text_size(px(size * 0.38))
-        .child(driver.badge())
+        .child(text)
 }
 
 /// Search box chrome around an input (magnifier on the left).

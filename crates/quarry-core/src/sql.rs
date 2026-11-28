@@ -20,6 +20,11 @@ impl Dialect {
         self.0 == DriverKind::SqlServer
     }
 
+    /// The engine whose SQL this is (CockroachDB writes PostgreSQL's).
+    pub fn base(self) -> DriverKind {
+        self.0.base()
+    }
+
     pub fn quote_ident(self, ident: &str) -> String {
         if self.is_mysql() {
             format!("`{}`", ident.replace('`', "``"))
@@ -58,7 +63,7 @@ impl Dialect {
             Value::Text(t) => self.string_literal(t),
             Value::Bytes(b) => {
                 let hex = crate::value::hex(b);
-                match self.0 {
+                match self.base() {
                     DriverKind::Postgres => format!("'\\x{}'", &hex[2..]),
                     DriverKind::SqlServer => hex,
                     _ => format!("X'{}'", &hex[2..]),
@@ -69,7 +74,7 @@ impl Dialect {
 
     /// `expr` cast to text where the server needs it for LIKE on any type.
     fn as_text(self, column: &str) -> String {
-        match self.0 {
+        match self.base() {
             DriverKind::Postgres => format!("{}::TEXT", self.quote_ident(column)),
             DriverKind::SqlServer => format!("CAST({} AS NVARCHAR(MAX))", self.quote_ident(column)),
             _ => self.quote_ident(column),
@@ -77,10 +82,22 @@ impl Dialect {
     }
 
     fn like(self, case_insensitive: bool) -> &'static str {
-        if case_insensitive && self.0 == DriverKind::Postgres {
+        if case_insensitive && self.0.is_postgres() {
             "ILIKE"
         } else {
             "LIKE"
+        }
+    }
+
+    /// `expr [NOT] LIKE pattern`, ignoring case when asked. MySQL's usual
+    /// collations ignore case already; TiDB's default one is binary, so it
+    /// compares lower-cased text.
+    fn like_expr(self, expr: String, case_insensitive: bool, negate: bool, pattern: String) -> String {
+        let not = if negate { "NOT " } else { "" };
+        if case_insensitive && self.0 == DriverKind::TiDb {
+            format!("LOWER({expr}) {not}LIKE LOWER({pattern})")
+        } else {
+            format!("{expr} {not}{} {pattern}", self.like(case_insensitive))
         }
     }
 
@@ -138,21 +155,18 @@ impl Dialect {
                 )
             }
             FilterOp::Like => format!("{col} LIKE {}", lit(value)),
-            FilterOp::ILike => format!("{col} {} {}", self.like(true), lit(value)),
+            FilterOp::ILike => self.like_expr(col, true, false, lit(value)),
             FilterOp::Contains | FilterOp::ContainsCi => {
-                format!("{} {} {}", self.as_text(column), self.like(op == FilterOp::ContainsCi), pattern("%", "%"))
+                self.like_expr(self.as_text(column), op == FilterOp::ContainsCi, false, pattern("%", "%"))
             }
-            FilterOp::NotContains | FilterOp::NotContainsCi => format!(
-                "{} NOT {} {}",
-                self.as_text(column),
-                self.like(op == FilterOp::NotContainsCi),
-                pattern("%", "%")
-            ),
+            FilterOp::NotContains | FilterOp::NotContainsCi => {
+                self.like_expr(self.as_text(column), op == FilterOp::NotContainsCi, true, pattern("%", "%"))
+            }
             FilterOp::HasPrefix | FilterOp::HasPrefixCi => {
-                format!("{} {} {}", self.as_text(column), self.like(op == FilterOp::HasPrefixCi), pattern("", "%"))
+                self.like_expr(self.as_text(column), op == FilterOp::HasPrefixCi, false, pattern("", "%"))
             }
             FilterOp::HasSuffix | FilterOp::HasSuffixCi => {
-                format!("{} {} {}", self.as_text(column), self.like(op == FilterOp::HasSuffixCi), pattern("%", ""))
+                self.like_expr(self.as_text(column), op == FilterOp::HasSuffixCi, false, pattern("%", ""))
             }
         })
     }
@@ -336,6 +350,12 @@ fn strip_leading_comments(mut s: &str) -> &str {
 /// `IF`, and a CREATE/ALTER of a procedure, function or trigger runs to the
 /// end of its batch, as SQL Server requires.
 pub fn split_for(kind: DriverKind, script: &str) -> Vec<Statement> {
+    if kind == DriverKind::Redis {
+        return crate::commands::redis_statements(script);
+    }
+    if kind == DriverKind::MongoDb {
+        return crate::mongo_shell::statements(script);
+    }
     if kind != DriverKind::SqlServer {
         return split_statements(script);
     }
@@ -483,6 +503,19 @@ pub fn first_keyword(sql: &str) -> String {
         .to_ascii_uppercase()
 }
 
+/// [`is_read_only`] in `kind`'s language: every Redis command line of the
+/// script only reads, or every SQL statement does.
+pub fn is_read_only_for(kind: DriverKind, script: &str) -> bool {
+    match kind {
+        DriverKind::Redis => crate::commands::redis_statements(script).iter().all(|s| crate::commands::redis_is_read(&s.text)),
+        DriverKind::MongoDb => {
+            let statements = crate::mongo_shell::statements(script);
+            !statements.is_empty() && statements.iter().all(|s| crate::mongo_shell::is_read(&s.text))
+        }
+        _ => is_read_only(script),
+    }
+}
+
 /// True when every statement only reads (SELECT/SHOW/EXPLAIN/…).
 pub fn is_read_only(sql: &str) -> bool {
     let stmts = split_statements(sql);
@@ -550,6 +583,12 @@ fn words(sql: &str, top_only: bool) -> Vec<String> {
 /// [`apply_auto_limit`] in `kind`'s syntax: SQL Server has no LIMIT, so it
 /// gets `SELECT TOP (n)` instead.
 pub fn apply_auto_limit_for(kind: DriverKind, stmt: &str, limit: Option<u32>) -> String {
+    if kind == DriverKind::MongoDb {
+        return crate::mongo_shell::with_limit(stmt, limit);
+    }
+    if !kind.is_sql() {
+        return stmt.to_string();
+    }
     if kind != DriverKind::SqlServer {
         return apply_auto_limit(stmt, limit);
     }

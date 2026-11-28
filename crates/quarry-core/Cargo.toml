@@ -22,6 +22,8 @@ russh = { version = "0.64", default-features = false, features = ["ring", "rsa",
 tokio-util = { version = "0.7", features = ["compat"] }
 futures-util = { version = "0.3", default-features = false, features = ["std"] }
 chrono = { version = "0.4", default-features = false, features = ["std"] }
+redis = { version = "1", default-features = false, features = ["tokio-comp", "tokio-native-tls-comp", "acl"] }
+mongodb = "3"
 
 # SQL Server's self-generated TLS certificates fail Apple's TLS stack even when
 # trusted, so macOS uses rustls (which skips verification when asked); the

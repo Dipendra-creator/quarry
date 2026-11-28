@@ -1,4 +1,21 @@
-Native database client, SQL editor and AI assistant for PostgreSQL, MySQL, MariaDB, Microsoft SQL Server and SQLite. MIT licensed.
+Native database client, SQL editor and AI assistant for PostgreSQL, MySQL, MariaDB, Microsoft SQL Server, SQLite, CockroachDB, YugabyteDB, TiDB, Redis and MongoDB. MIT licensed.
+
+## What's new in 0.3.0
+
+**Redis.** Connect to Redis, Valkey, KeyDB or Dragonfly. The sidebar lists keys by type (strings, hashes, lists, sets, sorted sets, streams), and opening a key shows its value as rows you can filter, edit, add and delete like a table. Quarry turns your edits into Redis commands, shows them in the preview, and applies them in one `MULTI`/`EXEC`. The editor runs redis-cli style commands with autocomplete for commands and key names, and shows results as grids (`HGETALL` as fields and values, `INFO` by section). Back up with `redis-cli --rdb`.
+
+**MongoDB.** Connect to MongoDB or Atlas (paste a `mongodb+srv://` string into Host). Collections and views are in the sidebar; documents are rows, with top-level fields as columns and nested values as editable shell literals. The filter bar becomes a MongoDB query (with a raw JSON option), and edits become `insertOne`, `updateOne` and `deleteOne` that keep each field's type. The editor runs mongosh-style calls: `find` with `sort`, `limit` and `skip`, `aggregate`, `countDocuments`, `distinct`, `insertMany`, `updateMany`, `createIndex`, `db.runCommand`, `show collections`, with `ObjectId()`, `ISODate()` and the other shell helpers. Back up and restore with `mongodump` and `mongorestore`.
+
+**CockroachDB, YugabyteDB and TiDB.** Each has its own connection type with the right port, user and database, and everything works: browsing, editing, structure changes, processes, backups. Where a server keeps the schema changes that ran before an error (CockroachDB, YugabyteDB, MySQL, MariaDB, TiDB), Quarry now applies structure edits one at a time and tells you which ones were made, instead of implying they were all undone.
+
+**Cloud services.** Create connection has tiles for Supabase, Neon, TimescaleDB, Amazon RDS / Aurora and PlanetScale, with their ports, users, databases and SSL settings filled in.
+
+The AI assistant and MCP agents work on all of these, in each database's own language.
+
+**Fixes**
+
+- Restoring a SQLite database from a `.sql` script works again (it was refused as a write in read-only mode).
+- On TiDB, "case insensitive" filters and search ignore case, as they do elsewhere.
 
 ## What's new in 0.2.4
 

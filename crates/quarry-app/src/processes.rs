@@ -51,12 +51,13 @@ impl ProcessList {
         .detach();
     }
 
-    fn selected_id(&self, cx: &App) -> Option<i64> {
+    /// The selected session's id: a number, or CockroachDB's hex id.
+    fn selected_id(&self, cx: &App) -> Option<String> {
         let t = self.table.read(cx);
         let row = t.selected_row().or(t.selected_cell().map(|(r, _)| r))?;
         match t.delegate().rows.get(row)?.value(0) {
-            Value::Int(i) => Some(*i),
-            v => v.display().parse().ok(),
+            Value::Null => None,
+            v => Some(v.display().to_string()).filter(|s| !s.trim().is_empty()),
         }
     }
 
@@ -68,9 +69,10 @@ impl ProcessList {
         let this = cx.entity().downgrade();
         let what = if cancel_only { "cancel the running query of" } else { "kill" };
         guard::guarded(&self.session.clone(), &format!("-- {what} process {id}\nKILL {id}"), window, cx, move |window, cx| {
+            let id = id.clone();
             let _ = this.update(cx, |_, cx| {
                 cx.spawn_in(window, async move |this, cx| {
-                    let r = db(async move { session.kill(id, cancel_only).await }).await;
+                    let r = db(async move { session.kill(&id, cancel_only).await }).await;
                     let _ = this.update_in(cx, |this, window, cx| match r {
                         Ok(()) => this.refresh(window, cx),
                         Err(e) => prompt::error("Failed", &format!("{e:#}"), window, cx),

@@ -19,7 +19,8 @@ pub struct MyDriver {
     conn: Mutex<Conn>,
 }
 
-const SYSTEM_DATABASES: [&str; 4] = ["information_schema", "mysql", "performance_schema", "sys"];
+/// Compared ignoring case: TiDB spells them in capitals.
+const SYSTEM_DATABASES: [&str; 5] = ["information_schema", "mysql", "performance_schema", "sys", "metrics_schema"];
 
 impl MyDriver {
     pub async fn connect(cfg: &ConnectionConfig, database: Option<&str>) -> Result<Self> {
@@ -44,7 +45,7 @@ impl MyDriver {
             },
             _ => Conn::new(base.ssl_opts(Some(ssl))).await,
         }
-        .context("could not connect to MySQL")?;
+        .with_context(|| format!("could not connect to {}", cfg.driver.label()))?;
         Ok(Self { kind: cfg.driver, conn: Mutex::new(conn) })
     }
 
@@ -66,6 +67,14 @@ impl MyDriver {
             Some(s) if !s.is_empty() => Ok(s.to_string()),
             _ => self.current_database().await,
         }
+    }
+}
+
+/// TiDB reports "8.0.11-TiDB-v7.5.1"; people know it by its own version.
+fn pretty_version(v: &str) -> String {
+    match v.split_once("-TiDB-") {
+        Some((mysql, tidb)) => format!("{tidb} (MySQL {mysql})"),
+        None => v.to_string(),
     }
 }
 
@@ -152,7 +161,8 @@ impl Driver for MyDriver {
 
     async fn server_version(&self) -> Result<String> {
         let rows = self.rows("SELECT VERSION()", vec![]).await?;
-        Ok(rows.into_iter().next().and_then(|r| r.into_iter().next().flatten()).unwrap_or_default())
+        let v = rows.into_iter().next().and_then(|r| r.into_iter().next().flatten()).unwrap_or_default();
+        Ok(pretty_version(&v))
     }
 
     async fn current_database(&self) -> Result<String> {
@@ -176,6 +186,11 @@ impl Driver for MyDriver {
     }
 
     async fn set_read_only(&self, on: bool) -> Result<()> {
+        // TiDB accepts READ ONLY transactions only as a no-op, so its
+        // read-only mode rests on Quarry's statement check alone.
+        if self.kind == DriverKind::TiDb {
+            return Ok(());
+        }
         let mode = if on { "READ ONLY" } else { "READ WRITE" };
         self.conn.lock().await.query_drop(format!("SET SESSION TRANSACTION {mode}")).await?;
         Ok(())
@@ -186,7 +201,7 @@ impl Driver for MyDriver {
         let dbs = self.list_databases().await?;
         Ok(dbs
             .into_iter()
-            .filter(|d| include_system || !SYSTEM_DATABASES.contains(&d.as_str()))
+            .filter(|d| include_system || !SYSTEM_DATABASES.contains(&d.to_ascii_lowercase().as_str()))
             .collect())
     }
 

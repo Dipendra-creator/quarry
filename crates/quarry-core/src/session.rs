@@ -141,7 +141,7 @@ impl Session {
     /// The schema unqualified names in SQL resolve to: the current schema on
     /// PostgreSQL, the login's default schema on SQL Server.
     pub fn unqualified_schema(&self) -> Option<String> {
-        match self.kind() {
+        match self.kind().base() {
             DriverKind::SqlServer => self.state.lock().unwrap().home_schema.clone(),
             _ => self.schema(),
         }
@@ -316,6 +316,9 @@ impl Session {
     /// One page of a table, as in the data view. Without an explicit sort,
     /// rows are ordered by primary key so pages stay stable.
     pub async fn browse(&self, req: &BrowseRequest) -> Result<QueryResult> {
+        if let Some(r) = self.driver().browse(req).await {
+            return r;
+        }
         let columns = self.column_names(&req.table, &req.filters).await?;
         let mut req = req.clone();
         if req.sort.is_empty() {
@@ -327,7 +330,20 @@ impl Session {
         self.driver().execute(&sql).await
     }
 
+    /// The statement a browse runs, written for the editor: SQL, or a
+    /// MongoDB `find()`.
+    pub fn browse_text(&self, req: &BrowseRequest, columns: &[String]) -> Result<String> {
+        match self.driver().browse_text(req) {
+            Some(r) => r,
+            None if self.kind().is_sql() => Ok(format!("{};", self.dialect().select_query(req, columns))),
+            None => anyhow::bail!("{} has no query language for this", self.kind().label()),
+        }
+    }
+
     pub async fn count(&self, table: &TableRef, filters: &[Filter]) -> Result<u64> {
+        if let Some(r) = self.driver().count(table, filters).await {
+            return r;
+        }
         let columns = self.column_names(table, filters).await?;
         let sql = self.dialect().count_query(table, filters, &columns);
         let r = self.driver().execute(&sql).await?;
@@ -338,7 +354,7 @@ impl Session {
     /// Runs one statement exactly as given and records it in history. In
     /// read-only mode, only statements that just read are run.
     pub async fn execute(&self, statement: &str) -> Result<QueryResult> {
-        if !sql::is_read_only(statement) {
+        if !sql::is_read_only_for(self.kind(), statement) {
             self.ensure_writable()?;
         }
         let _ = self.history.append(&self.config.id, &self.database(), statement);
@@ -364,14 +380,23 @@ impl Session {
         out
     }
 
+    /// Statements that apply staged grid edits, for the preview. On Redis
+    /// they are commands; an edit Redis cannot make shows why instead.
     pub fn changes_sql(&self, table: &TableRef, changes: &[RowChange], key: KeyKind) -> Vec<String> {
-        self.dialect().changes_sql(table, changes, key)
+        match self.driver().changes_text(table, changes, key) {
+            Some(Ok(commands)) => commands,
+            Some(Err(e)) => vec![format!("# {e:#}")],
+            None => self.dialect().changes_sql(table, changes, key),
+        }
     }
 
     /// Commits staged edits in one transaction; returns the statements run.
     pub async fn apply_changes(&self, table: &TableRef, changes: &[RowChange], key: KeyKind) -> Result<Vec<String>> {
         self.ensure_writable()?;
-        let statements = self.changes_sql(table, changes, key);
+        let statements = match self.driver().changes_text(table, changes, key) {
+            Some(r) => r?,
+            None => self.dialect().changes_sql(table, changes, key),
+        };
         if statements.is_empty() {
             return Ok(statements);
         }
@@ -382,8 +407,9 @@ impl Session {
         Ok(statements)
     }
 
-    /// Applies structure edits (columns, indexes). PostgreSQL and SQLite run
-    /// them in one transaction; MySQL commits each DDL statement on its own.
+    /// Applies structure edits (columns, indexes). PostgreSQL, SQL Server and
+    /// SQLite run them in one transaction. Elsewhere each change commits on
+    /// its own, so they run one by one and an error says which were made.
     pub async fn apply_structure(&self, table: &TableRef, changes: &[crate::alter::StructureChange]) -> Result<Vec<String>> {
         self.ensure_writable()?;
         let statements = self.dialect().structure_sql(table, changes)?;
@@ -393,7 +419,24 @@ impl Session {
         for s in &statements {
             let _ = self.history.append(&self.config.id, &self.database(), s);
         }
-        self.driver().execute_batch(&statements).await?;
+        if self.kind().transactional_ddl() {
+            self.driver().execute_batch(&statements).await?;
+            return Ok(statements);
+        }
+        // Each change commits on its own here, so say which ones did.
+        for (i, statement) in statements.iter().enumerate() {
+            if let Err(e) = self.driver().execute(statement).await {
+                if i == 0 {
+                    return Err(e);
+                }
+                return Err(e.context(format!(
+                    "{i} of {} changes were applied before this error, and {} cannot undo schema changes, so they stay. \
+                     Reload the structure to see them.",
+                    statements.len(),
+                    self.kind().label()
+                )));
+            }
+        }
         Ok(statements)
     }
 
@@ -413,7 +456,7 @@ impl Session {
     /// timings, so it is refused for statements that change data.
     pub async fn explain(&self, statement: &str, analyze: bool) -> Result<QueryResult> {
         let stmt = statement.trim().trim_end_matches(';');
-        if analyze && !sql::is_read_only(stmt) {
+        if analyze && !sql::is_read_only_for(self.kind(), stmt) {
             anyhow::bail!("EXPLAIN ANALYZE runs the statement, so only read-only statements can be analyzed");
         }
         if let Some(plan) = self.driver().explain(stmt, analyze).await? {
@@ -421,14 +464,20 @@ impl Session {
             return Ok(plan);
         }
         let sql = match (self.kind(), analyze) {
-            (DriverKind::Postgres, false) => format!("EXPLAIN {stmt}"),
-            (DriverKind::Postgres, true) => format!("EXPLAIN (ANALYZE, BUFFERS) {stmt}"),
+            (DriverKind::Postgres | DriverKind::YugabyteDb | DriverKind::CockroachDb | DriverKind::TiDb, false) => {
+                format!("EXPLAIN {stmt}")
+            }
+            (DriverKind::Postgres | DriverKind::YugabyteDb, true) => format!("EXPLAIN (ANALYZE, BUFFERS) {stmt}"),
+            // CockroachDB has no BUFFERS; TiDB has no FORMAT=TREE.
+            (DriverKind::CockroachDb | DriverKind::TiDb, true) => format!("EXPLAIN ANALYZE {stmt}"),
             (DriverKind::MySql, false) => format!("EXPLAIN FORMAT=TREE {stmt}"),
             (DriverKind::MySql, true) => format!("EXPLAIN ANALYZE {stmt}"),
             (DriverKind::MariaDb, false) => format!("EXPLAIN {stmt}"),
             (DriverKind::MariaDb, true) => format!("ANALYZE {stmt}"),
             (DriverKind::Sqlite, _) => format!("EXPLAIN QUERY PLAN {stmt}"),
             (DriverKind::SqlServer, _) => anyhow::bail!("the SQL Server driver did not return a plan"),
+            (DriverKind::Redis, _) => anyhow::bail!("Redis commands have no query plans"),
+            (DriverKind::MongoDb, _) => anyhow::bail!("add .explain() to a find() or aggregate() in the editor to see its plan"),
         };
         // Straight to the driver: the statement was checked above, and MariaDB's
         // ANALYZE does not look like a read to the read-only check.
@@ -444,10 +493,15 @@ impl Session {
     /// column is the id `kill` takes.
     pub async fn processes(&self) -> Result<QueryResult> {
         let sql = match self.kind() {
-            DriverKind::Postgres => {
+            DriverKind::CockroachDb => {
+                "SELECT session_id AS id, user_name AS user, client_address AS client, application_name, status, \
+                 now() - active_query_start AS duration, active_queries AS query FROM [SHOW CLUSTER SESSIONS] \
+                 WHERE session_id <> (SELECT session_id FROM [SHOW session_id]) ORDER BY active_query_start NULLS LAST"
+            }
+            DriverKind::Postgres | DriverKind::YugabyteDb => {
                 "SELECT pid, usename AS user, datname AS database, client_addr::text AS client, state,                  now() - query_start AS duration, query FROM pg_stat_activity                  WHERE pid <> pg_backend_pid() AND backend_type = 'client backend' ORDER BY query_start NULLS LAST"
             }
-            DriverKind::MySql | DriverKind::MariaDb => "SHOW FULL PROCESSLIST",
+            DriverKind::MySql | DriverKind::MariaDb | DriverKind::TiDb => "SHOW FULL PROCESSLIST",
             DriverKind::SqlServer => {
                 "SELECT s.session_id AS id, s.login_name AS [user], DB_NAME(s.database_id) AS [database], \
                  s.host_name AS client, s.status, r.total_elapsed_time AS duration_ms, t.text AS query \
@@ -456,14 +510,40 @@ impl Session {
                  WHERE s.is_user_process = 1 AND s.session_id <> @@SPID ORDER BY s.session_id"
             }
             DriverKind::Sqlite => anyhow::bail!("SQLite has no server processes"),
+            DriverKind::Redis => "CLIENT LIST",
+            DriverKind::MongoDb => "db.currentOp()",
         };
         self.driver().execute(sql).await
     }
 
-    /// Stops a server session's running statement (`cancel`) or the whole session.
-    pub async fn kill(&self, id: i64, cancel_only: bool) -> Result<()> {
+    /// Stops a server session's running statement (`cancel`) or the whole
+    /// session. `id` is the first column of [`Self::processes`]: a number, or
+    /// on CockroachDB a hex session id.
+    pub async fn kill(&self, id: &str, cancel_only: bool) -> Result<()> {
         self.ensure_writable()?;
-        let sql = match (self.kind(), cancel_only) {
+        let id = id.trim();
+        if self.kind() == DriverKind::MongoDb {
+            // Operation ids are numbers, or "shard:number" on a sharded cluster.
+            if id.is_empty() || !id.chars().all(|c| c.is_ascii_alphanumeric() || c == ':' || c == '-' || c == '_') {
+                anyhow::bail!("{id:?} is not a MongoDB operation id");
+            }
+            let op = if id.chars().all(|c| c.is_ascii_digit()) { id.to_string() } else { serde_json::to_string(id)? };
+            // MongoDB stops operations, not connections, so both buttons do the same.
+            return self.execute(&format!("db.adminCommand({{killOp: 1, op: {op}}})")).await.map(|_| ());
+        }
+        if self.kind() == DriverKind::CockroachDb {
+            if id.is_empty() || !id.chars().all(|c| c.is_ascii_hexdigit()) {
+                anyhow::bail!("{id:?} is not a CockroachDB session id");
+            }
+            let sql = if cancel_only {
+                format!("CANCEL QUERIES IF EXISTS (SELECT query_id FROM [SHOW CLUSTER QUERIES] WHERE session_id = '{id}')")
+            } else {
+                format!("CANCEL SESSION '{id}'")
+            };
+            return self.execute(&sql).await.map(|_| ());
+        }
+        let id: i64 = id.parse().map_err(|_| anyhow!("{id:?} is not a process id"))?;
+        let sql = match (self.kind().base(), cancel_only) {
             (DriverKind::Postgres, true) => format!("SELECT pg_cancel_backend({id})"),
             (DriverKind::Postgres, false) => format!("SELECT pg_terminate_backend({id})"),
             (DriverKind::MySql | DriverKind::MariaDb, true) => format!("KILL QUERY {id}"),
@@ -473,6 +553,9 @@ impl Session {
             }
             (DriverKind::SqlServer, false) => format!("KILL {id}"),
             (DriverKind::Sqlite, _) => anyhow::bail!("SQLite has no server processes"),
+            (DriverKind::Redis, true) => anyhow::bail!("Redis cannot stop a client's command on its own; use Kill Process to close the connection"),
+            (DriverKind::Redis, false) => format!("CLIENT KILL ID {id}"),
+            (DriverKind::CockroachDb | DriverKind::YugabyteDb | DriverKind::TiDb | DriverKind::MongoDb, _) => unreachable!("handled above, or base() is an engine"),
         };
         self.execute(&sql).await.map(|_| ())
     }
@@ -481,10 +564,10 @@ impl Session {
     /// assistant needs to write correct SQL.
     pub async fn overview(&self, schema: Option<&str>) -> Result<Vec<TableStructure>> {
         let mut out = Vec::new();
-        for item in self.list_items(schema).await? {
-            if item.kind.has_rows() {
-                out.push(self.structure(&item.table).await?);
-            }
+        // A Redis database can hold millions of keys; a sample describes it.
+        let max = if self.kind() == DriverKind::Redis { 100 } else { usize::MAX };
+        for item in self.list_items(schema).await?.into_iter().filter(|i| i.kind.has_rows()).take(max) {
+            out.push(self.structure(&item.table).await?);
         }
         Ok(out)
     }
@@ -493,7 +576,7 @@ impl Session {
     pub async fn search(&self, term: &str, schema: Option<&str>, max_tables: usize, rows_per_table: u32) -> Result<Vec<SearchHit>> {
         let mut hits = Vec::new();
         let items = self.list_items(schema).await?;
-        for item in items.iter().filter(|i| i.kind == ItemKind::Table).take(max_tables) {
+        for item in items.iter().filter(|i| matches!(i.kind, ItemKind::Table | ItemKind::Collection)).take(max_tables) {
             let req = BrowseRequest {
                 table: item.table.clone(),
                 filters: vec![Filter { column: ANY_COLUMN.into(), op: FilterOp::ContainsCi, value: term.into(), enabled: true }],

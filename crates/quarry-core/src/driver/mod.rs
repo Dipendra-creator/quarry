@@ -6,13 +6,17 @@ use std::sync::Arc;
 use anyhow::Result;
 use async_trait::async_trait;
 
+use crate::changes::{KeyKind, RowChange};
 use crate::model::{ConnectionConfig, DriverKind};
-use crate::query::QueryResult;
+use crate::query::{BrowseRequest, Filter, QueryResult};
 use crate::schema::{Item, TableRef, TableStructure};
 
+mod mongo;
+pub use mongo::connection_string as mongo_connection_string;
 mod mssql;
 mod mysql;
 mod postgres;
+mod redis;
 mod sqlite;
 
 #[async_trait]
@@ -67,14 +71,41 @@ pub trait Driver: Send + Sync {
     async fn explain(&self, _sql: &str, _analyze: bool) -> Result<Option<QueryResult>> {
         Ok(None)
     }
+
+    // Engines that do not speak SQL (Redis) answer the data view themselves;
+    // SQL engines leave these to the SQL generator.
+
+    /// One page of a table-like item, if this engine browses on its own.
+    async fn browse(&self, _req: &BrowseRequest) -> Option<Result<QueryResult>> {
+        None
+    }
+
+    /// Rows the filters keep, if this engine counts on its own.
+    async fn count(&self, _table: &TableRef, _filters: &[Filter]) -> Option<Result<u64>> {
+        None
+    }
+
+    /// The statement a browse runs, for the filter bar's "open in editor".
+    fn browse_text(&self, _req: &BrowseRequest) -> Option<Result<String>> {
+        None
+    }
+
+    /// Statements in this engine's own language for staged grid edits.
+    fn changes_text(&self, _table: &TableRef, _changes: &[RowChange], _key: KeyKind) -> Option<Result<Vec<String>>> {
+        None
+    }
 }
 
 /// Opens a connection. `database` overrides the configured default database.
 pub async fn connect(config: &ConnectionConfig, database: Option<&str>) -> Result<Arc<dyn Driver>> {
     Ok(match config.driver {
-        DriverKind::Postgres => Arc::new(postgres::PgDriver::connect(config, database).await?),
-        DriverKind::MySql | DriverKind::MariaDb => Arc::new(mysql::MyDriver::connect(config, database).await?),
+        DriverKind::Postgres | DriverKind::CockroachDb | DriverKind::YugabyteDb => {
+            Arc::new(postgres::PgDriver::connect(config, database).await?)
+        }
+        DriverKind::MySql | DriverKind::MariaDb | DriverKind::TiDb => Arc::new(mysql::MyDriver::connect(config, database).await?),
         DriverKind::Sqlite => Arc::new(sqlite::SqliteDriver::open(config)?),
         DriverKind::SqlServer => Arc::new(mssql::MsDriver::connect(config, database).await?),
+        DriverKind::Redis => Arc::new(redis::RedisDriver::connect(config, database).await?),
+        DriverKind::MongoDb => Arc::new(mongo::MongoDriver::connect(config, database).await?),
     })
 }

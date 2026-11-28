@@ -241,3 +241,149 @@ pub struct BrowseRequest {
 fn default_limit() -> u32 {
     300
 }
+
+/// Filters, sorts and pages rows in memory, with the filter bar's meaning,
+/// for engines that cannot do it on the server (a Redis hash's fields).
+/// "Raw SQL" filters do not apply here and are ignored.
+pub fn filter_sort_page(columns: &[String], mut rows: Vec<Vec<Value>>, req: &BrowseRequest) -> Vec<Vec<Value>> {
+    rows.retain(|row| req.filters.iter().filter(|f| f.enabled).all(|f| row_matches(columns, row, f)));
+    for sort in req.sort.iter().rev() {
+        if let Some(ix) = columns.iter().position(|c| *c == sort.column) {
+            rows.sort_by(|a, b| {
+                let o = compare_values(&a[ix], &b[ix]);
+                if sort.descending { o.reverse() } else { o }
+            });
+        }
+    }
+    rows.into_iter().skip(req.offset as usize).take(req.limit as usize).collect()
+}
+
+/// Number of rows the filters keep.
+pub fn count_matching(columns: &[String], rows: &[Vec<Value>], filters: &[Filter]) -> u64 {
+    rows.iter().filter(|row| filters.iter().filter(|f| f.enabled).all(|f| row_matches(columns, row, f))).count() as u64
+}
+
+fn row_matches(columns: &[String], row: &[Value], f: &Filter) -> bool {
+    if f.column == RAW_SQL {
+        return true;
+    }
+    if f.column == ANY_COLUMN {
+        return row.iter().any(|v| value_matches(v, f.op, &f.value));
+    }
+    match columns.iter().position(|c| *c == f.column) {
+        Some(ix) => value_matches(&row[ix], f.op, &f.value),
+        None => true,
+    }
+}
+
+fn value_matches(v: &Value, op: FilterOp, want: &str) -> bool {
+    if matches!(op, FilterOp::IsNull) {
+        return matches!(v, Value::Null);
+    }
+    if matches!(op, FilterOp::IsNotNull) {
+        return !matches!(v, Value::Null);
+    }
+    if matches!(v, Value::Null) {
+        return false;
+    }
+    let text = v.display().to_string();
+    let (lower, want_lower) = (text.to_lowercase(), want.to_lowercase());
+    let cmp = |w: &str| compare_values(v, &Value::Text(w.trim().to_string()));
+    use std::cmp::Ordering::*;
+    match op {
+        FilterOp::Eq => cmp(want) == Equal,
+        FilterOp::NotEq => cmp(want) != Equal,
+        FilterOp::Lt => cmp(want) == Less,
+        FilterOp::Gt => cmp(want) == Greater,
+        FilterOp::LtEq => cmp(want) != Greater,
+        FilterOp::GtEq => cmp(want) != Less,
+        FilterOp::In | FilterOp::NotIn => {
+            let hit = want.split(',').map(str::trim).filter(|s| !s.is_empty()).any(|w| cmp(w) == Equal);
+            hit == (op == FilterOp::In)
+        }
+        FilterOp::Between | FilterOp::NotBetween => {
+            let upper = want.to_ascii_uppercase();
+            let Some(at) = upper.find(" AND ") else { return true };
+            let inside = cmp(&want[..at]) != Less && cmp(&want[at + 5..]) != Greater;
+            inside == (op == FilterOp::Between)
+        }
+        FilterOp::Like => like(&text, want),
+        FilterOp::ILike => like(&lower, &want_lower),
+        FilterOp::Contains => text.contains(want),
+        FilterOp::NotContains => !text.contains(want),
+        FilterOp::ContainsCi => lower.contains(&want_lower),
+        FilterOp::NotContainsCi => !lower.contains(&want_lower),
+        FilterOp::HasPrefix => text.starts_with(want),
+        FilterOp::HasSuffix => text.ends_with(want),
+        FilterOp::HasPrefixCi => lower.starts_with(&want_lower),
+        FilterOp::HasSuffixCi => lower.ends_with(&want_lower),
+        FilterOp::IsNull | FilterOp::IsNotNull => unreachable!(),
+    }
+}
+
+/// Numbers compare as numbers, everything else as text.
+fn compare_values(a: &Value, b: &Value) -> std::cmp::Ordering {
+    let num = |v: &Value| match v {
+        Value::Int(i) => Some(*i as f64),
+        Value::Float(f) => Some(*f),
+        Value::Text(t) => t.trim().parse::<f64>().ok(),
+        _ => None,
+    };
+    match (a, b) {
+        (Value::Null, Value::Null) => std::cmp::Ordering::Equal,
+        (Value::Null, _) => std::cmp::Ordering::Less,
+        (_, Value::Null) => std::cmp::Ordering::Greater,
+        _ => match (num(a), num(b)) {
+            (Some(x), Some(y)) => x.partial_cmp(&y).unwrap_or(std::cmp::Ordering::Equal),
+            _ => a.display().cmp(&b.display()),
+        },
+    }
+}
+
+/// SQL LIKE: `%` any run, `_` one character.
+fn like(text: &str, pattern: &str) -> bool {
+    fn go(t: &[char], p: &[char]) -> bool {
+        match p.first() {
+            None => t.is_empty(),
+            Some('%') => (0..=t.len()).any(|i| go(&t[i..], &p[1..])),
+            Some('_') => !t.is_empty() && go(&t[1..], &p[1..]),
+            Some(c) => t.first() == Some(c) && go(&t[1..], &p[1..]),
+        }
+    }
+    let (t, p): (Vec<char>, Vec<char>) = (text.chars().collect(), pattern.chars().collect());
+    go(&t, &p)
+}
+
+#[cfg(test)]
+mod memory_tests {
+    use super::*;
+
+    #[test]
+    fn filters_sorts_and_pages_in_memory() {
+        let cols = vec!["member".to_string(), "score".to_string()];
+        let rows = vec![
+            vec![Value::Text("ann".into()), Value::Float(10.0)],
+            vec![Value::Text("Bob".into()), Value::Float(2.5)],
+            vec![Value::Text("cy".into()), Value::Float(30.0)],
+        ];
+        let mut req = BrowseRequest {
+            table: crate::schema::TableRef::new(None, "z"),
+            filters: vec![Filter { column: "score".into(), op: FilterOp::Gt, value: "5".into(), enabled: true }],
+            sort: vec![Sort { column: "score".into(), descending: true }],
+            limit: 10,
+            offset: 0,
+            columns: vec![],
+        };
+        let out = filter_sort_page(&cols, rows.clone(), &req);
+        assert_eq!(out.iter().map(|r| r[0].display().to_string()).collect::<Vec<_>>(), vec!["cy", "ann"]);
+        req.filters = vec![Filter { column: ANY_COLUMN.into(), op: FilterOp::ContainsCi, value: "BO".into(), enabled: true }];
+        assert_eq!(count_matching(&cols, &rows, &req.filters), 1);
+        req.filters = vec![Filter { column: "member".into(), op: FilterOp::Like, value: "_n%".into(), enabled: true }];
+        assert_eq!(count_matching(&cols, &rows, &req.filters), 1);
+        req.filters.clear();
+        req.sort = vec![Sort { column: "score".into(), descending: false }];
+        req.offset = 1;
+        req.limit = 1;
+        assert_eq!(filter_sort_page(&cols, rows, &req)[0][0], Value::Text("ann".into()), "numbers sort as numbers");
+    }
+}

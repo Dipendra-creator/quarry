@@ -13,10 +13,14 @@ use crate::sql::Dialect;
 use crate::value::Value;
 
 pub struct PgDriver {
+    /// PostgreSQL, or a database speaking its protocol.
+    kind: DriverKind,
     client: Client,
 }
 
 const SYSTEM_SCHEMAS: [&str; 2] = ["pg_catalog", "information_schema"];
+/// CockroachDB's own catalogs, hidden like PostgreSQL's.
+const CRDB_SYSTEM_SCHEMAS: [&str; 2] = ["crdb_internal", "pg_extension"];
 
 /// `regclass` expression for `$1`.`$2`.
 const REL: &str = "(quote_ident($1::text) || '.' || quote_ident($2::text))::regclass";
@@ -49,13 +53,13 @@ impl PgDriver {
         let (client, connection) = pg
             .connect(postgres_native_tls::MakeTlsConnector::new(tls))
             .await
-            .context("could not connect to PostgreSQL")?;
+            .with_context(|| format!("could not connect to {}", cfg.driver.label()))?;
         tokio::spawn(async move {
             if let Err(e) = connection.await {
                 eprintln!("postgres connection closed: {e}");
             }
         });
-        Ok(Self { client })
+        Ok(Self { kind: cfg.driver, client })
     }
 
     async fn strings(&self, sql: &str, params: &[&(dyn tokio_postgres::types::ToSql + Sync)]) -> Result<Vec<String>> {
@@ -186,12 +190,23 @@ fn cell(text: Option<&str>, ty: Option<&Type>) -> Value {
 #[async_trait]
 impl Driver for PgDriver {
     fn kind(&self) -> DriverKind {
-        DriverKind::Postgres
+        self.kind
     }
 
     async fn server_version(&self) -> Result<String> {
+        if self.kind == DriverKind::CockroachDb {
+            // "CockroachDB CCL v25.3.1 (aarch64-…)": its server_version is a
+            // PostgreSQL compatibility level, not its own release.
+            let v: String = self.client.query_one("SELECT version()", &[]).await?.get(0);
+            return Ok(v.split_whitespace().find(|w| w.starts_with('v')).unwrap_or(&v).to_string());
+        }
         let v: String = self.client.query_one("SHOW server_version", &[]).await?.get(0);
-        Ok(v.split(" (").next().unwrap_or_default().to_string())
+        let v = v.split(" (").next().unwrap_or_default();
+        // YugabyteDB: "15.12-YB-2026.1.3.1-b0".
+        Ok(match v.split_once("-YB-") {
+            Some((pg, yb)) => format!("{} (PostgreSQL {pg})", yb.split("-b").next().unwrap_or(yb)),
+            None => v.to_string(),
+        })
     }
 
     async fn current_database(&self) -> Result<String> {
@@ -220,7 +235,11 @@ impl Driver for PgDriver {
             .await?;
         Ok(all
             .into_iter()
-            .filter(|s| include_system || !SYSTEM_SCHEMAS.contains(&s.as_str()))
+            .filter(|s| {
+                include_system
+                    || !(SYSTEM_SCHEMAS.contains(&s.as_str())
+                        || (self.kind == DriverKind::CockroachDb && CRDB_SYSTEM_SCHEMAS.contains(&s.as_str())))
+            })
             .collect())
     }
 
@@ -406,6 +425,7 @@ impl Driver for PgDriver {
                     if r.get::<_, bool>(4) { " CYCLE" } else { "" }
                 ))
             }
+            kind => bail!("{} has no {}", self.kind.label(), kind.section().to_lowercase()),
         }
     }
 

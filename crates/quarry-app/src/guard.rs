@@ -19,7 +19,7 @@ pub fn guarded(session: &Session, sql: &str, window: &mut Window, cx: &mut App, 
         }
     };
     let preview: String = sql.chars().take(600).collect();
-    match mode.check(sql) {
+    match mode.check(session.kind(), sql) {
         // Deferred: callers are usually mid-update of the entity `run` updates.
         Confirmation::None => window.defer(cx, call),
         Confirmation::Warn => prompt::confirm(

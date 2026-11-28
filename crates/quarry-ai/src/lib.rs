@@ -210,7 +210,7 @@ impl Toolbox {
                     json!({
                         "id": {"type": "string", "description": "Existing id to update; omit to create."},
                         "name": {"type": "string"},
-                        "driver": {"type": "string", "enum": ["postgres", "mysql", "mariadb", "sqlserver", "sqlite"]},
+                        "driver": {"type": "string", "enum": ["postgres", "mysql", "mariadb", "sqlserver", "sqlite", "cockroachdb", "yugabytedb", "tidb", "redis", "mongodb"]},
                         "host": {"type": "string"}, "port": {"type": "integer"}, "user": {"type": "string"},
                         "password": {"type": "string"}, "database": {"type": "string"},
                         "file_path": {"type": "string", "description": "SQLite database file."},
@@ -299,11 +299,11 @@ impl Toolbox {
             },
             Tool {
                 name: "run_sql",
-                description: "Run one or more SQL statements. Statements that change data or structure need permission: they can be refused.",
+                description: "Run one or more statements in the connection's language: SQL, or on Redis one redis-cli command per line, or on MongoDB mongosh-style calls (db.users.find({...}).limit(10)). Statements that change data or structure need permission: they can be refused.",
                 input_schema: object(
                     json!({
                         "connection": conn_arg(), "sql": {"type": "string"},
-                        "limit": {"type": "integer", "description": "LIMIT added to SELECTs without one. Default 100."}
+                        "limit": {"type": "integer", "description": "LIMIT added to SELECTs (and .limit() to MongoDB find() calls) without one. Default 100."}
                     }),
                     &["connection", "sql"],
                 ),
@@ -644,7 +644,7 @@ impl Toolbox {
     async fn run_sql(&self, a: &Args) -> Result<Json> {
         let s = self.session(a).await?;
         let script = a.str("sql")?;
-        if !sql::is_read_only(script) {
+        if !sql::is_read_only_for(s.kind(), script) {
             // Refused here, before the user is asked to approve something that cannot run.
             s.ensure_writable()?;
             self.gate.allow(&s, script).await?;

@@ -84,6 +84,56 @@ fn aliases(sql: &str) -> HashMap<String, String> {
     map
 }
 
+const MONGO_METHODS: &[&str] = &[
+    "find", "findOne", "aggregate", "countDocuments", "estimatedDocumentCount", "distinct", "insertOne", "insertMany", "updateOne",
+    "updateMany", "replaceOne", "deleteOne", "deleteMany", "createIndex", "dropIndex", "getIndexes", "drop", "renameCollection",
+    "stats", "sort", "limit", "skip", "projection", "explain",
+];
+const MONGO_DB_METHODS: &[&str] = &["getCollection", "getCollectionNames", "createCollection", "createView", "runCommand", "adminCommand", "stats", "currentOp", "dropDatabase"];
+
+/// MongoDB: collections after `db.`, methods after `db.<collection>.`.
+/// Labels are the part after the last dot, which is what gets replaced.
+pub fn suggest_mongo(catalog: &Catalog, prefix: &str) -> Vec<(String, CompletionItemKind, String)> {
+    let parts: Vec<&str> = prefix.split('.').collect();
+    let partial = parts.last().copied().unwrap_or_default().to_lowercase();
+    let starts = |s: &str| s.to_lowercase().starts_with(&partial);
+    let mut out: Vec<(String, CompletionItemKind, String)> = match parts.as_slice() {
+        ["db", _] => catalog
+            .tables
+            .iter()
+            .filter(|t| starts(t))
+            .map(|t| (t.clone(), CompletionItemKind::CLASS, "collection".into()))
+            .chain(MONGO_DB_METHODS.iter().filter(|m| starts(m)).map(|m| (m.to_string(), CompletionItemKind::METHOD, "database method".into())))
+            .collect(),
+        [_, .., _] if parts.len() >= 3 || parts.first() != Some(&"db") => {
+            MONGO_METHODS.iter().filter(|m| starts(m)).map(|m| (m.to_string(), CompletionItemKind::METHOD, "method".into())).collect()
+        }
+        [word] if !word.is_empty() && "db".starts_with(&word.to_lowercase()) => vec![("db".into(), CompletionItemKind::KEYWORD, "the current database".into())],
+        _ => vec![],
+    };
+    out.truncate(200);
+    out
+}
+
+/// Redis: command names at the start of a line, key names after it.
+pub fn suggest_command(catalog: &Catalog, first_word: bool, prefix: &str) -> Vec<(String, CompletionItemKind, String)> {
+    if prefix.is_empty() {
+        return vec![];
+    }
+    let p = prefix.to_lowercase();
+    let mut out: Vec<(String, CompletionItemKind, String)> = if first_word {
+        quarry_core::commands::COMMON_COMMANDS
+            .iter()
+            .filter(|c| c.to_lowercase().starts_with(&p))
+            .map(|c| (c.to_string(), CompletionItemKind::KEYWORD, "command".into()))
+            .collect()
+    } else {
+        catalog.tables.iter().filter(|k| k.to_lowercase().starts_with(&p)).map(|k| (k.clone(), CompletionItemKind::CLASS, "key".into())).collect()
+    };
+    out.truncate(200);
+    out
+}
+
 /// Suggestions for the text before the cursor: `(label, kind, detail)`.
 pub fn suggest(catalog: &Catalog, statement: &str, prefix: &str) -> Vec<(String, CompletionItemKind, String)> {
     let mut out = Vec::new();
@@ -139,8 +189,16 @@ impl CompletionProvider for SqlCompletion {
             .last()
             .map_or(offset, |(i, _)| i);
         let prefix = &text[word_start..offset];
-        let stmt = quarry_core::sql::statement_at_for(self.kind, &text, offset).map(|s| s.text).unwrap_or_default();
-        let items = suggest(&self.catalog.borrow(), &stmt, prefix);
+        let items = if self.kind == quarry_core::DriverKind::MongoDb {
+            suggest_mongo(&self.catalog.borrow(), prefix)
+        } else if self.kind.is_sql() {
+            let stmt = quarry_core::sql::statement_at_for(self.kind, &text, offset).map(|s| s.text).unwrap_or_default();
+            suggest(&self.catalog.borrow(), &stmt, prefix)
+        } else {
+            let line_start = before.rfind('\n').map_or(0, |i| i + 1);
+            let first_word = before[line_start..word_start].trim().is_empty();
+            suggest_command(&self.catalog.borrow(), first_word, prefix)
+        };
         let partial_start = prefix.rfind('.').map_or(word_start, |p| word_start + p + 1);
         let range = lsp_types::Range { start: rope.offset_to_position(partial_start), end: rope.offset_to_position(offset) };
         let items = items

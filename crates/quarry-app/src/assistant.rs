@@ -255,7 +255,7 @@ impl AssistantPanel {
                     .text_size(px(13.))
                     .code_block_actions(move |block, _, _| {
                         let code = block.code().to_string();
-                        let is_sql = block.lang().is_none_or(|l| l.eq_ignore_ascii_case("sql"));
+                        let is_sql = block.lang().is_none_or(|l| ["sql", "redis", "mongodb", "javascript", "js"].iter().any(|k| l.eq_ignore_ascii_case(k)));
                         let (open, run) = (actions.clone(), actions.clone());
                         let (open_sql, run_sql, copy) = (code.clone(), code.clone(), code);
                         h_flex()

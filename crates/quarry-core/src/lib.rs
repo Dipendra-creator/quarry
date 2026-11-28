@@ -5,10 +5,12 @@
 
 pub mod alter;
 pub mod changes;
+pub mod commands;
 pub mod driver;
 pub mod export;
 pub mod import;
 pub mod model;
+pub mod mongo_shell;
 pub mod query;
 pub mod schema;
 pub mod session;

@@ -8,6 +8,11 @@ fn c(hex: u32) -> Hsla {
     rgb(hex).into()
 }
 
+/// A 0xRRGGBB color.
+pub fn hex(rgb: u32) -> Hsla {
+    c(rgb)
+}
+
 #[derive(Clone)]
 pub struct Palette {
     pub dark: bool,
@@ -160,6 +165,11 @@ impl Palette {
             MariaDb => c(0x8C6A4F),
             Sqlite => c(0x0F80CC),
             SqlServer => c(0xC4302B),
+            CockroachDb => c(0x6933FF),
+            YugabyteDb => c(0xFF6E42),
+            TiDb => c(0xDC150B),
+            Redis => c(0xD82C20),
+            MongoDb => c(0x00684A),
         }
     }
 

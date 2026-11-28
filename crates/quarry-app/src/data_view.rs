@@ -48,9 +48,15 @@ const PG_OPS: [FilterOp; 22] = [
     FilterOp::HasSuffixCi,
 ];
 
+/// The filter bar's name for a column choice: MongoDB's raw filter is a
+/// query document, not SQL.
+fn column_label(column: &str, kind: quarry_core::DriverKind) -> String {
+    if column == RAW_SQL && kind == quarry_core::DriverKind::MongoDb { "Raw query (JSON)".into() } else { column.to_string() }
+}
+
 /// Operators each engine offers in the filter bar, as in the original.
 pub fn operators(driver: quarry_core::DriverKind) -> Vec<FilterOp> {
-    if driver == quarry_core::DriverKind::Postgres {
+    if driver.is_postgres() {
         PG_OPS.to_vec()
     } else {
         PG_OPS
@@ -158,7 +164,7 @@ fn column_def(values: &[Value]) -> ColumnDef {
 impl DataView {
     pub fn new(session: Arc<Session>, item: Item, filters: Vec<Filter>, window: &mut Window, cx: &mut Context<Self>) -> Self {
         let limit = session.config.page_size.max(1);
-        let table = Self::make_grid(Grid::Data, item.kind == ItemKind::Table && !session.read_only(), vec![], window, cx);
+        let table = Self::make_grid(Grid::Data, item.kind.is_editable() && !session.read_only(), vec![], window, cx);
         let limit_input = cx.new(|cx| InputState::new(window, cx).default_value(limit.to_string()));
         let offset_input = cx.new(|cx| InputState::new(window, cx).default_value("0"));
         let subs = vec![cx.subscribe_in(&table, window, |v, _, ev, window, cx| v.on_table_event(Grid::Data, ev, window, cx))];
@@ -275,7 +281,7 @@ impl DataView {
 
     /// Tables can be edited, but only with full access.
     fn editable(&self) -> bool {
-        self.item.kind == ItemKind::Table && !self.session.read_only()
+        self.item.kind.is_editable() && !self.session.read_only()
     }
 
     /// Follows the title bar's Read only / Full access toggle.
@@ -294,7 +300,8 @@ impl DataView {
     }
 
     fn set_structure(&mut self, s: TableStructure, window: &mut Window, cx: &mut Context<Self>) {
-        let editable = self.editable();
+        // A collection's fields are sampled, not declared: shown, not edited.
+        let editable = self.editable() && self.session.kind().is_sql();
         let headers = |h: &[&str]| h.iter().map(|n| ResultColumn { name: n.to_string(), type_name: String::new() }).collect::<Vec<_>>();
         let columns = Self::make_grid(Grid::Columns, editable, COLUMNS_READONLY.to_vec(), window, cx);
         columns.update(cx, |t, cx| {
@@ -626,7 +633,7 @@ impl DataView {
     }
 
     fn default_type(&self) -> &'static str {
-        match self.session.kind() {
+        match self.session.kind().base() {
             quarry_core::DriverKind::Postgres | quarry_core::DriverKind::Sqlite => "text",
             quarry_core::DriverKind::SqlServer => "nvarchar(255)",
             _ => "varchar(255)",
@@ -862,7 +869,10 @@ impl DataView {
             Some(s) => cols.extend(s.columns.iter().map(|c| c.name.clone())),
             None => cols.extend(self.table.read(cx).delegate().column_names()),
         }
-        cols.push(RAW_SQL.to_string());
+        // Redis keys have nothing to filter with; MongoDB takes a query document.
+        if self.session.kind() != quarry_core::DriverKind::Redis {
+            cols.push(RAW_SQL.to_string());
+        }
         cols
     }
 
@@ -870,6 +880,7 @@ impl DataView {
         let p = cx.palette().clone();
         let columns = self.column_choices(cx);
         let ops = operators(self.session.kind());
+        let kind = self.session.kind();
         let this = cx.entity().downgrade();
         let rows = self.filters.iter().enumerate().map(|(i, f)| {
             let (t1, t2, t3, t4, t5) = (this.clone(), this.clone(), this.clone(), this.clone(), this.clone());
@@ -886,7 +897,7 @@ impl DataView {
                 }))
                 .child(
                     Button::new(("f-col", i))
-                        .label(f.column.clone())
+                        .label(column_label(&f.column, kind))
                         .xsmall()
                         .outline()
                         .dropdown_caret(true)
@@ -894,7 +905,7 @@ impl DataView {
                         .dropdown_menu(move |menu, _, _| {
                             cols.iter().fold(menu.max_h(px(360.)).scrollable(true), |m, c| {
                                 let (t, c) = (t2.clone(), c.clone());
-                                m.item(PopupMenuItem::new(c.clone()).on_click(move |_, _, cx| {
+                                m.item(PopupMenuItem::new(column_label(&c, kind)).on_click(move |_, _, cx| {
                                     let _ = t.update(cx, |v, cx| {
                                         v.filters[i].column = c.clone();
                                         cx.notify();
@@ -961,11 +972,16 @@ impl DataView {
             .child(
                 h_flex()
                     .gap(px(8.))
-                    .child(footer_button("f-sql", cx).child("SQL").on_click(cx.listener(|v, _, _, cx| {
-                        let req = v.browse_request(cx);
-                        let sql = v.session.dialect().select_query(&req, &v.column_choices(cx)[1..].to_vec());
-                        cx.emit(DataViewEvent::OpenSql(format!("{sql};")));
-                    })))
+                    .when(kind != quarry_core::DriverKind::Redis, |d| {
+                        d.child(footer_button("f-sql", cx).child(if kind.is_sql() { "SQL" } else { "Query" }).on_click(cx.listener(|v, _, window, cx| {
+                            let req = v.browse_request(cx);
+                            let columns: Vec<String> = v.column_choices(cx).into_iter().filter(|c| c != ANY_COLUMN && c != RAW_SQL).collect();
+                            match v.session.browse_text(&req, &columns) {
+                                Ok(text) => cx.emit(DataViewEvent::OpenSql(text)),
+                                Err(e) => crate::prompt::error("Cannot open the query", &format!("{e:#}"), window, cx),
+                            }
+                        })))
+                    })
                     .child(
                         div()
                             .flex_1()
@@ -997,7 +1013,7 @@ impl DataView {
             }
         };
         let editable = self.editable();
-        let read_only_table = self.item.kind == ItemKind::Table && self.session.read_only();
+        let read_only_table = self.item.kind.is_editable() && self.session.read_only();
         h_flex()
             .h(px(40.))
             .px(px(8.))
@@ -1006,9 +1022,12 @@ impl DataView {
             .bg(p.window_secondary)
             .border_t_1()
             .border_color(p.separator)
-            .child(segmented("dv-mode", &["Data", "Structure"], (self.mode == Mode::Structure) as usize, 64., cx, move |i, _, cx| {
-                let _ = this.update(cx, |v, cx| v.set_mode(if i == 0 { Mode::Data } else { Mode::Structure }, cx));
-            }))
+            // A Redis key has a value, not a structure.
+            .when(self.session.kind().is_sql(), |d| {
+                d.child(segmented("dv-mode", &["Data", "Structure"], (self.mode == Mode::Structure) as usize, 64., cx, move |i, _, cx| {
+                    let _ = this.update(cx, |v, cx| v.set_mode(if i == 0 { Mode::Data } else { Mode::Structure }, cx));
+                }))
+            })
             .when(self.mode == Mode::Data && editable, |d| {
                 d.child(
                     footer_button("add-row", cx)
@@ -1017,7 +1036,7 @@ impl DataView {
                         .on_click(cx.listener(|v, _, window, cx| v.add_row_to(Grid::Data, window, cx))),
                 )
             })
-            .when(self.mode == Mode::Structure && editable, |d| {
+            .when(self.mode == Mode::Structure && editable && self.session.kind().is_sql(), |d| {
                 d.child(
                     footer_button("add-col", cx)
                         .child(icon(IconName::Plus, 10., p.icon))

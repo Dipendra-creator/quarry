@@ -70,6 +70,15 @@ pub fn item_icon(kind: ItemKind) -> IconName {
         ItemKind::Function => IconName::SquareFunction,
         ItemKind::Procedure => IconName::Code,
         ItemKind::Sequence => IconName::ListOrdered,
+        ItemKind::Collection => IconName::Boxes,
+        ItemKind::StringKey => IconName::Type,
+        ItemKind::HashKey => IconName::Hash,
+        ItemKind::ListKey => IconName::List,
+        ItemKind::SetKey => IconName::CircleDot,
+        ItemKind::ZSetKey => IconName::ArrowDownWideNarrow,
+        ItemKind::StreamKey => IconName::Activity,
+        ItemKind::JsonKey => IconName::Braces,
+        ItemKind::OtherKey => IconName::KeyRound,
     }
 }
 
@@ -255,6 +264,12 @@ impl Sidebar {
         let d = self.session.dialect();
         let t = d.table(&item.table);
         let sql = match (truncate, item.kind, self.session.kind()) {
+            // A Redis key's value goes with the key.
+            (_, kind, _) if kind.is_key() => quarry_core::commands::command_line(&["DEL", &item.table.name]),
+            (truncate, _, DriverKind::MongoDb) => {
+                let coll = format!("db.getCollection({})", serde_json::to_string(&item.table.name).unwrap_or_default());
+                if truncate { format!("{coll}.deleteMany({{}})") } else { format!("{coll}.drop()") }
+            }
             (true, _, DriverKind::Sqlite) => format!("DELETE FROM {t}"),
             (true, _, _) => format!("TRUNCATE TABLE {t}"),
             (false, ItemKind::View, _) => format!("DROP VIEW {t}"),
@@ -262,7 +277,8 @@ impl Sidebar {
             (false, ItemKind::Function, _) => format!("DROP FUNCTION {t}"),
             (false, ItemKind::Procedure, _) => format!("DROP PROCEDURE {t}"),
             (false, ItemKind::Sequence, _) => format!("DROP SEQUENCE {t}"),
-            (false, ItemKind::Table, _) => format!("DROP TABLE {t}"),
+            (false, ItemKind::Table | ItemKind::Collection, _) => format!("DROP TABLE {t}"),
+            (false, _, _) => unreachable!("keys are handled above"),
         };
         let verb = if truncate { "truncate" } else { "delete" };
         let this = cx.entity().downgrade();
@@ -439,16 +455,21 @@ impl Sidebar {
                             })
                         };
                         let name = item.name().to_string();
-                        let m = menu
-                            .item(ev("Open in new tab", SidebarEvent::OpenNewTab))
-                            .item(ev("Open structure", SidebarEvent::OpenStructure))
-                            .item(ev("Show DDL", SidebarEvent::ShowDdl))
+                        // A Redis key has a value, not a structure; its "DDL" is commands.
+                        let key = item.kind.is_key();
+                        let m = menu.item(ev("Open in new tab", SidebarEvent::OpenNewTab));
+                        let m = if key { m } else { m.item(ev("Open structure", SidebarEvent::OpenStructure)) };
+                        let m = m
+                            .item(ev(if key { "Show as commands" } else { "Show DDL" }, SidebarEvent::ShowDdl))
                             .item(PopupMenuItem::new("Copy name").on_click(move |_, _, cx| cx.write_to_clipboard(ClipboardItem::new_string(name.clone()))));
                         // Import, truncate and delete only with full access.
                         if read_only {
                             return m;
                         }
                         let mut m = m.separator();
+                        if item.kind == ItemKind::Collection {
+                            m = m.item(act("Delete all documents...", true));
+                        }
                         if item.kind == ItemKind::Table {
                             let this = this.clone();
                             m = m
@@ -562,7 +583,28 @@ impl Sidebar {
     fn render_bottom(&mut self, cx: &mut Context<Self>) -> impl IntoElement {
         let this = cx.entity().downgrade();
         let templates = |driver: DriverKind, schema: Option<String>| -> Vec<(&'static str, String)> {
-            let (id, ty) = match driver {
+            if driver == DriverKind::MongoDb {
+                return vec![
+                    ("New Collection...", "db.createCollection(\"new_collection\")".into()),
+                    (
+                        "New Document...",
+                        "db.new_collection.insertOne({\n  name: \"Ann\",\n  tags: [\"admin\"],\n  createdAt: new Date()\n})".into(),
+                    ),
+                    ("New View...", "db.createView(\"new_view\", \"new_collection\", [\n  { $match: { tags: \"admin\" } }\n])".into()),
+                    ("New Index...", "db.new_collection.createIndex({ name: 1 }, { unique: true })".into()),
+                ];
+            }
+            if driver == DriverKind::Redis {
+                return vec![
+                    ("New String...", "SET new:string \"value\"".into()),
+                    ("New Hash...", "HSET new:hash field1 \"value 1\" field2 \"value 2\"".into()),
+                    ("New List...", "RPUSH new:list first second third".into()),
+                    ("New Set...", "SADD new:set red green blue".into()),
+                    ("New Sorted Set...", "ZADD new:zset 1 first 2 second 3 third".into()),
+                    ("New Stream...", "XADD new:stream * event created by quarry".into()),
+                ];
+            }
+            let (id, ty) = match driver.base() {
                 DriverKind::Postgres => ("id SERIAL PRIMARY KEY", "TEXT"),
                 DriverKind::Sqlite => ("id INTEGER PRIMARY KEY AUTOINCREMENT", "TEXT"),
                 DriverKind::SqlServer => ("id INT IDENTITY(1,1) PRIMARY KEY", "NVARCHAR(255)"),
@@ -573,18 +615,22 @@ impl Sidebar {
                 Some(s) if driver.has_schemas() => format!("{}.{n}", Dialect(driver).quote_ident(s)),
                 _ => n.to_string(),
             };
-            vec![
+            let mut templates = vec![
                 ("New Table...", format!("CREATE TABLE {} (\n    {id},\n    name {ty} NOT NULL\n);", name("new_table"))),
                 ("New View...", format!("CREATE VIEW {} AS\nSELECT 1 AS one;", name("new_view"))),
-                (
+            ];
+            // TiDB has no stored functions.
+            if driver != DriverKind::TiDb {
+                templates.push((
                     "New Function...",
-                    match driver {
+                    match driver.base() {
                         DriverKind::Postgres => format!("CREATE FUNCTION {}() RETURNS integer AS $$\n    SELECT 1;\n$$ LANGUAGE sql;", name("new_function")),
                         DriverKind::SqlServer => format!("CREATE FUNCTION {}() RETURNS INT AS\nBEGIN\n    RETURN 1;\nEND;", name("new_function")),
                         _ => "CREATE FUNCTION new_function() RETURNS INT DETERMINISTIC\nRETURN 1;".to_string(),
                     },
-                ),
-            ]
+                ));
+            }
+            templates
         };
         let driver = self.session.kind();
         let schema = self.session.schema();

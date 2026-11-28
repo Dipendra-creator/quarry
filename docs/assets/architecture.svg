@@ -1,4 +1,4 @@
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1280 664" width="1280" height="664" role="img" aria-label="Quarry's architecture. quarry-app, the GPUI desktop app, uses quarry-core directly for the data grid, editor and structure, and quarry-ai for the assistant pane. quarry-mcp, the MCP server for any AI agent, reaches quarry-ai through a localhost bridge. quarry-ai turns the core's Session API into 24 JSON tools behind a write gate, and runs the chat loop for Claude Code, Codex, Anthropic and OpenAI. quarry-core holds the Session API, SQL dialects, staged edits, structure edits, import and export, SSH tunnels and the store, with drivers for PostgreSQL, MySQL and MariaDB, and SQLite.">
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1280 724" width="1280" height="724" role="img" aria-label="Quarry's architecture. quarry-app, the GPUI desktop app, uses quarry-core directly for the data grid, editor and structure, and quarry-ai for the assistant pane. quarry-mcp, the MCP server for any AI agent, reaches quarry-ai through a localhost bridge. quarry-ai turns the core's Session API into 24 JSON tools behind a write gate, and runs the chat loop for Claude Code, Codex, Anthropic and OpenAI. quarry-core holds the Session API, SQL dialects, staged edits, structure edits, import and export, SSH tunnels and the store, with drivers for PostgreSQL, CockroachDB and YugabyteDB; MySQL, MariaDB and TiDB; SQL Server; SQLite; Redis; and MongoDB.">
   <title>Quarry architecture</title>
   <defs>
     <linearGradient id="bg" x1="0" y1="0" x2="1" y2="1">
@@ -22,8 +22,8 @@
     </style>
   </defs>
 
-  <rect width="1280" height="664" rx="24" fill="url(#bg)"/>
-  <rect x="0.5" y="0.5" width="1279" height="663" rx="23.5" fill="none" stroke="#FFFFFF" stroke-opacity="0.08"/>
+  <rect width="1280" height="724" rx="24" fill="url(#bg)"/>
+  <rect x="0.5" y="0.5" width="1279" height="723" rx="23.5" fill="none" stroke="#FFFFFF" stroke-opacity="0.08"/>
 
   <g class="ui">
     <!-- quarry-app -->
@@ -85,7 +85,7 @@
     <text class="chipdesc" x="1034" y="365">so agents share your sessions</text>
 
     <!-- quarry-core -->
-    <rect x="40" y="432" width="1200" height="180" rx="16" fill="#131C31" stroke="#0E7490" stroke-opacity="0.9" stroke-width="1.5"/>
+    <rect x="40" y="432" width="1200" height="240" rx="16" fill="#131C31" stroke="#0E7490" stroke-opacity="0.9" stroke-width="1.5"/>
     <rect x="58" y="448" width="34" height="34" rx="9" fill="#0E7490"/>
     <g transform="translate(63 453)" class="glyph">
       <path d="m12.83 2.18a2 2 0 0 0-1.66 0L2.6 6.08a1 1 0 0 0 0 1.83l8.58 3.91a2 2 0 0 0 1.66 0l8.58-3.9a1 1 0 0 0 0-1.83Z"/>
@@ -95,7 +95,7 @@
     <text class="sub" x="106" y="484">The engine, with no UI code: one Session API for people and for AI</text>
     <g text-anchor="middle">
       <rect x="58" y="504" width="156" height="34" rx="8" fill="#0C2A35" stroke="#0E7490"/><text class="chiptext mono" x="136" y="526" fill="#A5F3FC">Session</text>
-      <rect class="chip" x="224" y="504" width="156" height="34" rx="8"/><text class="chiptext" x="302" y="526">SQL dialects</text>
+      <rect class="chip" x="224" y="504" width="156" height="34" rx="8"/><text class="chiptext" x="302" y="526">SQL, Redis, mongosh</text>
       <rect class="chip" x="390" y="504" width="156" height="34" rx="8"/><text class="chiptext" x="468" y="526">Staged edits → DML</text>
       <rect class="chip" x="556" y="504" width="156" height="34" rx="8"/><text class="chiptext" x="634" y="526">Structure → ALTER</text>
       <rect class="chip" x="722" y="504" width="156" height="34" rx="8"/><text class="chiptext" x="800" y="526">Import / export</text>
@@ -103,16 +103,34 @@
       <rect class="chip" x="1054" y="504" width="168" height="34" rx="8"/><text class="chiptext" x="1138" y="526">Store + OS keychain</text>
     </g>
     <g font-size="13">
-      <rect x="58" y="556" width="380" height="38" rx="9" fill="#101829" stroke="#2F3B5E"/>
-      <rect x="68" y="563" width="24" height="24" rx="6" fill="#336791"/><text x="80" y="579.5" font-size="10.5" font-weight="700" fill="#FFFFFF" text-anchor="middle">Pg</text>
-      <text x="102" y="580" font-weight="600" fill="#E2E8F0">PostgreSQL <tspan class="mono" font-weight="400" font-size="12" fill="#93A1C1">tokio-postgres</tspan></text>
-      <rect x="450" y="556" width="380" height="38" rx="9" fill="#101829" stroke="#2F3B5E"/>
-      <rect x="460" y="563" width="24" height="24" rx="6" fill="#00758F"/><text x="472" y="579.5" font-size="10.5" font-weight="700" fill="#FFFFFF" text-anchor="middle">My</text>
-      <rect x="488" y="563" width="24" height="24" rx="6" fill="#8C6A4F"/><text x="500" y="579.5" font-size="10.5" font-weight="700" fill="#FFFFFF" text-anchor="middle">Ma</text>
-      <text x="522" y="580" font-weight="600" fill="#E2E8F0">MySQL, MariaDB <tspan class="mono" font-weight="400" font-size="12" fill="#93A1C1">mysql_async</tspan></text>
-      <rect x="842" y="556" width="380" height="38" rx="9" fill="#101829" stroke="#2F3B5E"/>
-      <rect x="852" y="563" width="24" height="24" rx="6" fill="#0F80CC"/><text x="864" y="579.5" font-size="10.5" font-weight="700" fill="#FFFFFF" text-anchor="middle">Sl</text>
-      <text x="886" y="580" font-weight="600" fill="#E2E8F0">SQLite <tspan class="mono" font-weight="400" font-size="12" fill="#93A1C1">rusqlite (bundled)</tspan></text>
+      <rect x="58" y="552" width="380" height="48" rx="9" fill="#101829" stroke="#2F3B5E"/>
+      <rect x="68" y="564" width="24" height="24" rx="6" fill="#336791"/><text x="80" y="580.5" font-size="10.5" font-weight="700" fill="#FFFFFF" text-anchor="middle">Pg</text>
+      <rect x="96" y="564" width="24" height="24" rx="6" fill="#6933FF"/><text x="108" y="580.5" font-size="10.5" font-weight="700" fill="#FFFFFF" text-anchor="middle">Cr</text>
+      <rect x="124" y="564" width="24" height="24" rx="6" fill="#FF6E42"/><text x="136" y="580.5" font-size="10.5" font-weight="700" fill="#FFFFFF" text-anchor="middle">Yb</text>
+      <text x="158" y="573" font-weight="600" fill="#E2E8F0">PostgreSQL, CockroachDB, YugabyteDB</text>
+      <text class="mono" x="158" y="590" font-size="12" fill="#93A1C1">tokio-postgres</text>
+      <rect x="450" y="552" width="380" height="48" rx="9" fill="#101829" stroke="#2F3B5E"/>
+      <rect x="460" y="564" width="24" height="24" rx="6" fill="#00758F"/><text x="472" y="580.5" font-size="10.5" font-weight="700" fill="#FFFFFF" text-anchor="middle">My</text>
+      <rect x="488" y="564" width="24" height="24" rx="6" fill="#8C6A4F"/><text x="500" y="580.5" font-size="10.5" font-weight="700" fill="#FFFFFF" text-anchor="middle">Ma</text>
+      <rect x="516" y="564" width="24" height="24" rx="6" fill="#DC150B"/><text x="528" y="580.5" font-size="10.5" font-weight="700" fill="#FFFFFF" text-anchor="middle">Ti</text>
+      <text x="550" y="573" font-weight="600" fill="#E2E8F0">MySQL, MariaDB, TiDB</text>
+      <text class="mono" x="550" y="590" font-size="12" fill="#93A1C1">mysql_async</text>
+      <rect x="842" y="552" width="380" height="48" rx="9" fill="#101829" stroke="#2F3B5E"/>
+      <rect x="852" y="564" width="24" height="24" rx="6" fill="#C4302B"/><text x="864" y="580.5" font-size="10.5" font-weight="700" fill="#FFFFFF" text-anchor="middle">Ms</text>
+      <text x="886" y="573" font-weight="600" fill="#E2E8F0">SQL Server, Azure SQL</text>
+      <text class="mono" x="886" y="590" font-size="12" fill="#93A1C1">tiberius</text>
+      <rect x="58" y="608" width="380" height="48" rx="9" fill="#101829" stroke="#2F3B5E"/>
+      <rect x="68" y="620" width="24" height="24" rx="6" fill="#0F80CC"/><text x="80" y="636.5" font-size="10.5" font-weight="700" fill="#FFFFFF" text-anchor="middle">Sl</text>
+      <text x="102" y="629" font-weight="600" fill="#E2E8F0">SQLite</text>
+      <text class="mono" x="102" y="646" font-size="12" fill="#93A1C1">rusqlite (bundled)</text>
+      <rect x="450" y="608" width="380" height="48" rx="9" fill="#101829" stroke="#2F3B5E"/>
+      <rect x="460" y="620" width="24" height="24" rx="6" fill="#D82C20"/><text x="472" y="636.5" font-size="10.5" font-weight="700" fill="#FFFFFF" text-anchor="middle">Rd</text>
+      <text x="494" y="629" font-weight="600" fill="#E2E8F0">Redis, Valkey</text>
+      <text class="mono" x="494" y="646" font-size="12" fill="#93A1C1">redis · keys as rows, commands</text>
+      <rect x="842" y="608" width="380" height="48" rx="9" fill="#101829" stroke="#2F3B5E"/>
+      <rect x="852" y="620" width="24" height="24" rx="6" fill="#00684A"/><text x="864" y="636.5" font-size="10.5" font-weight="700" fill="#FFFFFF" text-anchor="middle">Mg</text>
+      <text x="886" y="629" font-weight="600" fill="#E2E8F0">MongoDB, Atlas</text>
+      <text class="mono" x="886" y="646" font-size="12" fill="#93A1C1">mongodb · documents as rows, mongosh</text>
     </g>
 
     <!-- dependencies -->
@@ -126,6 +144,6 @@
     <path class="flow" d="M800 394V428" marker-end="url(#arrow)"/>
     <text class="flowlabel" x="812" y="417">same Session API</text>
 
-    <text x="640" y="645" font-size="13.5" fill="#A9B4CC" text-anchor="middle">The rule that keeps the crates apart: <tspan fill="#E2E8F0" font-weight="600">database behavior lives in quarry-core</tspan>, so anything a person can do, an agent can do.</text>
+    <text x="640" y="705" font-size="13.5" fill="#A9B4CC" text-anchor="middle">The rule that keeps the crates apart: <tspan fill="#E2E8F0" font-weight="600">database behavior lives in quarry-core</tspan>, so anything a person can do, an agent can do.</text>
   </g>
 </svg>

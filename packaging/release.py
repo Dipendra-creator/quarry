@@ -182,7 +182,8 @@ def linux(work, arch, value):
         f"Installed-Size: {installed_size}\nDepends: {dependencies}\n"
         "Recommends: xdg-desktop-portal\nHomepage: https://github.com/Dipendra-creator/quarry\n"
         "Description: Native database client with an AI assistant\n"
-        " Browse and edit PostgreSQL, MySQL, MariaDB, SQL Server and SQLite databases.\n"
+        " Browse and edit PostgreSQL, MySQL, MariaDB, SQL Server, SQLite, CockroachDB,\n"
+        " YugabyteDB, TiDB, Redis and MongoDB databases.\n"
         " Includes a SQL editor, approval-gated AI tools and an MCP server.\n",
         encoding="utf-8",
     )

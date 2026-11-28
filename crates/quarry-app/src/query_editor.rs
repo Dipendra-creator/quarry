@@ -399,7 +399,8 @@ Find the cause and give me a corrected query:
                     }
                 }),
             )
-            .child(
+            // The formatter speaks SQL only.
+            .when(self.session.kind().is_sql(), |d| d.child(
                 h_flex()
                     .child(
                         Button::new("q-beautify")
@@ -421,7 +422,7 @@ Find the cause and give me a corrected query:
                             }))
                         }
                     })),
-            )
+            ))
             .child(
                 h_flex()
                     .child(

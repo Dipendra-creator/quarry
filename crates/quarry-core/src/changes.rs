@@ -39,7 +39,7 @@ impl Dialect {
     }
 
     fn limit_one(self, key_kind: KeyKind) -> &'static str {
-        match (self.0, key_kind) {
+        match (self.base(), key_kind) {
             (crate::model::DriverKind::MySql | crate::model::DriverKind::MariaDb, KeyKind::AllColumns) => " LIMIT 1",
             _ => "",
         }
@@ -47,7 +47,7 @@ impl Dialect {
 
     /// SQL Server's `TOP (1)`, its spelling of MySQL's trailing `LIMIT 1`.
     fn top_one(self, key_kind: KeyKind) -> &'static str {
-        match (self.0, key_kind) {
+        match (self.base(), key_kind) {
             (crate::model::DriverKind::SqlServer, KeyKind::AllColumns) => " TOP (1)",
             _ => "",
         }
@@ -56,7 +56,7 @@ impl Dialect {
     pub fn change_sql(self, table: &TableRef, change: &RowChange, key_kind: KeyKind) -> String {
         let t = self.table(table);
         match change {
-            RowChange::Insert { values } if values.is_empty() => match self.0 {
+            RowChange::Insert { values } if values.is_empty() => match self.base() {
                 crate::model::DriverKind::MySql | crate::model::DriverKind::MariaDb => {
                     format!("INSERT INTO {t} () VALUES ();")
                 }

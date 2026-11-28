@@ -43,7 +43,7 @@ impl Dialect {
         if let Some(d) = c.default.as_deref().filter(|d| !d.is_empty()) {
             s.push_str(&format!(" DEFAULT {d}"));
         }
-        if matches!(self.0, DriverKind::MySql | DriverKind::MariaDb) {
+        if self.0.is_mysql() {
             if let Some(cm) = c.comment.as_deref().filter(|c| !c.is_empty()) {
                 s.push_str(&format!(" COMMENT {}", self.string_literal(cm)));
             }
@@ -107,11 +107,14 @@ impl Dialect {
 
     /// ALTER/CREATE/DROP statements for structure changes, in a safe order.
     pub fn structure_sql(self, table: &TableRef, changes: &[StructureChange]) -> Result<Vec<String>> {
+        if !self.0.is_sql() {
+            bail!("{} has no table structure to change", self.0.label());
+        }
         let t = self.table(table);
         let mut out = Vec::new();
         for ch in changes {
-            match (self.0, ch) {
-                (_, StructureChange::DropIndex { name }) => out.push(match self.0 {
+            match (self.base(), ch) {
+                (_, StructureChange::DropIndex { name }) => out.push(match self.base() {
                     DriverKind::MySql | DriverKind::MariaDb | DriverKind::SqlServer => {
                         format!("DROP INDEX {} ON {t};", self.quote_ident(name))
                     }
@@ -173,7 +176,7 @@ impl Dialect {
                 }
                 (_, StructureChange::AddColumn { column }) => {
                     out.push(format!("ALTER TABLE {t} ADD COLUMN {};", self.column_spec(column)));
-                    if self.0 == DriverKind::Postgres && column.comment.as_deref().is_some_and(|c| !c.is_empty()) {
+                    if self.0.is_postgres() && column.comment.as_deref().is_some_and(|c| !c.is_empty()) {
                         out.push(self.comment_sql(table, &column.name, &column.comment));
                     }
                 }
@@ -202,6 +205,9 @@ impl Dialect {
                     if old.comment != new.comment {
                         out.push(self.comment_sql(table, &new.name, &new.comment));
                     }
+                }
+                (DriverKind::CockroachDb | DriverKind::YugabyteDb | DriverKind::TiDb | DriverKind::Redis | DriverKind::MongoDb, _) => {
+                    unreachable!("base() is an engine, and only SQL gets here")
                 }
                 (DriverKind::Sqlite, StructureChange::ModifyColumn { old, new }) => {
                     if (&old.data_type, old.nullable, &old.default) != (&new.data_type, new.nullable, &new.default) {

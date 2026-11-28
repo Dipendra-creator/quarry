@@ -27,9 +27,10 @@
 
 </div>
 
-**Quarry** is a native database client for PostgreSQL, MySQL, MariaDB, Microsoft SQL Server
-and SQLite, written
-in Rust with [GPUI](https://gpui.rs). Its layout, shortcuts and workflows follow
+**Quarry** is a native database client for PostgreSQL, MySQL, MariaDB, Microsoft SQL Server,
+SQLite, CockroachDB, YugabyteDB, TiDB, Redis and MongoDB, with ready-made connections for
+Supabase, Neon, TimescaleDB, Amazon RDS/Aurora and PlanetScale. It is written in Rust with
+[GPUI](https://gpui.rs). Its layout, shortcuts and workflows follow
 TablePlus for Windows, with no accounts, no license keys and no paywalls. An AI
 assistant is built in: it reads your schema before it writes SQL, explains and optimizes
 queries from their execution plans, and asks you before it changes anything. The same
@@ -195,6 +196,28 @@ OpenAI API instead, open Preferences → AI (<kbd>Ctrl</kbd>+<kbd>,</kbd>).
   indexes are staged as `ALTER` statements. Plus a DDL view.
 - **Import and export:** export to CSV, JSON or SQL, and import CSV.
 
+### Redis and MongoDB
+
+The same grid, filters, editor and AI work on the two most used non-SQL databases.
+
+- **Redis** (and Valkey, KeyDB, Dragonfly): the sidebar lists keys by type (strings,
+  hashes, lists, sets, sorted sets, streams). Opening a key shows its value as rows: a
+  hash's fields, a list's items, a set's members, a sorted set's members with scores, a
+  stream's entries. Edit, add and delete them like table rows. Quarry writes the Redis
+  commands (`HSET`, `LSET`, `ZADD`, …), shows them in the preview, and applies them in one
+  `MULTI`/`EXEC`. The editor runs redis-cli style commands, one per line, with results
+  shaped as grids (`HGETALL` as fields and values, `INFO` by section), and autocompletes
+  commands and key names. "Show as commands" prints the commands that recreate a key.
+- **MongoDB** (and Atlas, DocumentDB): collections and views in the sidebar, documents as
+  rows, top-level fields as columns (sampled from the collection, with their types), and
+  nested documents and arrays as editable shell literals. The filter bar becomes a query,
+  with a raw JSON query option. Edits become `insertOne`, `updateOne` and `deleteOne` and
+  keep each field's type: an ObjectId stays an ObjectId and a date stays a date. The
+  editor runs mongosh-style calls (`db.users.find({age: {$gt: 30}}).sort({name: 1})`,
+  `aggregate`, `updateMany`, `createIndex`, `db.runCommand`, `show collections`) with
+  `ObjectId()`, `ISODate()` and the other shell helpers. Paste a `mongodb+srv://`
+  connection string into Host to connect to Atlas.
+
 ### Write SQL
 
 <img src="docs/assets/screenshots/ask-ai.png" alt="The SQL editor with a highlighted query, its 60 result rows below, and the Ask AI menu open with Explain, Optimize and Fix." width="100%">
@@ -224,7 +247,9 @@ OpenAI API instead, open Preferences → AI (<kbd>Ctrl</kbd>+<kbd>,</kbd>).
   starts in **Read only**. Then nothing can change the database: no cell edits, no
   structure edits, no INSERT/UPDATE/DELETE/DDL in the SQL editor, no imports, truncates,
   drops or killed processes, and no changes by the AI assistant or MCP agents. PostgreSQL,
-  MySQL/MariaDB and SQLite connections are also put in the server's own read-only mode.
+  CockroachDB, YugabyteDB, MySQL/MariaDB and SQLite connections are also put in the
+  server's own read-only mode. TiDB, Redis and MongoDB have no such mode, so there
+  Quarry's own check refuses every command that is not a read.
   Connections tagged production ask before switching to Full access.
 - **Five safe-mode levels**, as in the original. Silent sends queries directly. Alert asks
   before sending. Safe requires typing the connection name. The "except read" variants
@@ -233,8 +258,9 @@ OpenAI API instead, open Preferences → AI (<kbd>Ctrl</kbd>+<kbd>,</kbd>).
   History sidebar, a console log, a database switcher (<kbd>Ctrl</kbd>+<kbd>K</kbd>),
   Open Anything (<kbd>Ctrl</kbd>+<kbd>P</kbd>) and a process list (<kbd>Ctrl</kbd>+<kbd>.</kbd>).
 - **Everything else:** light and dark themes, and backup and restore (`pg_dump`,
-  `mysqldump`, `psql`, `mysql` and `sqlcmd` from your PATH; SQLite built in). SQL Server
-  backups are written by the server itself (`BACKUP DATABASE`).
+  `ysql_dump`, `mysqldump`, `psql`, `mysql`, `sqlcmd`, `redis-cli --rdb`, `mongodump` and
+  `mongorestore` from your PATH; SQLite built in). SQL Server and CockroachDB backups are
+  written by the server itself (`BACKUP DATABASE`, `BACKUP … INTO`).
 
 ### Supported databases
 
@@ -245,10 +271,25 @@ OpenAI API instead, open Preferences → AI (<kbd>Ctrl</kbd>+<kbd>,</kbd>).
 | MariaDB | [`mysql_async`](https://crates.io/crates/mysql_async) | Shares the MySQL driver |
 | SQL Server (2012+, Azure SQL) | [`tiberius`](https://crates.io/crates/tiberius) | Passes live tests against SQL Server 2022 |
 | SQLite | [`rusqlite`](https://crates.io/crates/rusqlite), bundled | Passes end-to-end tests |
+| CockroachDB | [`tokio-postgres`](https://crates.io/crates/tokio-postgres) | Passes live tests against CockroachDB 26 |
+| YugabyteDB (YSQL) | [`tokio-postgres`](https://crates.io/crates/tokio-postgres) | Passes the PostgreSQL live tests |
+| TiDB | [`mysql_async`](https://crates.io/crates/mysql_async) | Passes live tests against TiDB 7.5 |
+| Redis, Valkey | [`redis`](https://crates.io/crates/redis) | Passes live tests against Redis 7 |
+| MongoDB | [`mongodb`](https://crates.io/crates/mongodb) | Passes live tests against MongoDB 8 |
+
+Cloud services that are one of these underneath have their own tile in **Create
+connection**, with the port, user, database and SSL mode they need filled in: Supabase,
+Neon, TimescaleDB and Amazon RDS / Aurora (PostgreSQL), and PlanetScale (MySQL).
 
 SQL Server connections use SQL Server authentication (user and password). Scripts may use
 `GO` batch separators, and procedure, function and trigger bodies run as one statement.
 The editor's row limit becomes `SELECT TOP (n)`.
+
+MySQL, MariaDB, TiDB, CockroachDB and YugabyteDB keep the schema changes that ran before an
+error in a batch, so Quarry applies structure edits one at a time there and says which ones
+were made. MongoDB without a replica set has no multi-document transactions, so grid edits
+run one at a time and an error says how many were made. Redis connections are single-node
+(no Redis Cluster yet), and the sidebar lists the first 10,000 keys.
 
 More are on the [roadmap](#roadmap).
 
@@ -372,11 +413,12 @@ detail.
 
 ## Architecture
 
-<img src="docs/assets/architecture.svg" alt="Quarry's crates. quarry-app, the GPUI desktop app, and quarry-mcp, the MCP server, sit on quarry-ai, which turns the engine into 24 tools behind a write gate and runs the chat loop. Everything sits on quarry-core: the Session API, SQL dialects, staged edits, structure edits, import and export, SSH tunnels and the store, with drivers for PostgreSQL, MySQL and MariaDB, and SQLite." width="100%">
+<img src="docs/assets/architecture.svg" alt="Quarry's crates. quarry-app, the GPUI desktop app, and quarry-mcp, the MCP server, sit on quarry-ai, which turns the engine into 24 tools behind a write gate and runs the chat loop. Everything sits on quarry-core: the Session API, SQL dialects, staged edits, structure edits, import and export, SSH tunnels and the store, with drivers for PostgreSQL (and CockroachDB and YugabyteDB), MySQL (MariaDB, TiDB), SQL Server, SQLite, Redis and MongoDB." width="100%">
 
 ```
-crates/quarry-core   UI-free engine: drivers, sessions, SQL generation, staged edits,
-                     structure edits, import/export, SSH tunnels, storage
+crates/quarry-core   UI-free engine: drivers, sessions, SQL generation, Redis and mongosh
+                     command languages, staged edits, structure edits, import/export,
+                     SSH tunnels, storage
 crates/quarry-ai     Tools (JSON schemas), write gate, assistant backends, bridge, quarry-mcp
 crates/quarry-app    The GPUI desktop app
 docs/                Architecture, AI and release notes
@@ -458,10 +500,20 @@ drivers run only when you point them at real servers:
 docker run -d --rm --name quarry-test-pg -e POSTGRES_PASSWORD=quarry -p 127.0.0.1:55432:5432 postgres:17
 docker run -d --rm --name quarry-test-mysql -e MYSQL_ROOT_PASSWORD=quarry -e MYSQL_DATABASE=shop -p 127.0.0.1:53306:3306 mysql:8.4
 docker run -d --rm --name quarry-test-mssql -e ACCEPT_EULA=Y -e MSSQL_SA_PASSWORD=Quarry_Test_123 -p 127.0.0.1:51433:1433 mcr.microsoft.com/mssql/server:2022-latest
+docker run -d --rm --name quarry-test-crdb -p 127.0.0.1:26257:26257 cockroachdb/cockroach start-single-node --insecure
+docker run -d --rm --name quarry-test-yb -p 127.0.0.1:5433:5433 yugabytedb/yugabyte bin/yugabyted start --background=false
+docker run -d --rm --name quarry-test-tidb -p 127.0.0.1:4000:4000 pingcap/tidb
+docker run -d --rm --name quarry-test-redis -p 127.0.0.1:56379:6379 redis:7-alpine
+docker run -d --rm --name quarry-test-mongo -p 127.0.0.1:57017:27017 mongo:8
 QUARRY_TEST_PG=127.0.0.1:55432:postgres:quarry \
 QUARRY_TEST_MYSQL=127.0.0.1:53306:root:quarry \
 QUARRY_TEST_MSSQL=127.0.0.1:51433:sa:Quarry_Test_123 \
-cargo test -p quarry-core --test live
+QUARRY_TEST_COCKROACH=127.0.0.1:26257:root: \
+QUARRY_TEST_YUGABYTE=127.0.0.1:5433:yugabyte: \
+QUARRY_TEST_TIDB=127.0.0.1:4000:root: \
+QUARRY_TEST_REDIS=127.0.0.1:56379:: \
+QUARRY_TEST_MONGO=127.0.0.1:57017:: \
+cargo test -p quarry-core --test live -- --test-threads=1
 ```
 
 `QUARRY_TEST_SSH` and `QUARRY_TEST_PG_VIA_SSH` add the SSH tunnel test (see
@@ -500,14 +552,14 @@ commands and the signing status.
 
 Features TablePlus has that Quarry does not have yet:
 
-- [ ] Drivers: Redis, MongoDB, ClickHouse, DuckDB, CockroachDB, Redshift,
-      Greenplum, Vertica, Cassandra, Snowflake, BigQuery, libSQL/Turso, Cloudflare D1,
-      DynamoDB, Elasticsearch
+- [ ] Drivers: ClickHouse, DuckDB, Oracle, Redshift, Greenplum, Vertica, Cassandra,
+      Snowflake, BigQuery, libSQL/Turso, Cloudflare D1, DynamoDB, Elasticsearch
+- [ ] Redis Cluster and Sentinel, and searching keys on the server beyond the first 10,000
 - [ ] Metrics board, ER diagram, a chart tab for results, user and privilege management
 - [ ] Query parameters and variables, JSON viewer and quick look, map view
 - [ ] Create Table and Clone Table dialogs (today: SQL templates from the sidebar "+" menu)
 - [ ] Import of SQL dumps and JSON through dialogs (today: open a `.sql` file and run it)
-- [ ] Customizable keymap, plugins, more UI languages
+- [ ] Plugins, more UI languages
 
 ## Contributing
 

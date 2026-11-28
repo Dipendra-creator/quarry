@@ -80,6 +80,24 @@ fn tool(name: &str) -> Result<PathBuf> {
         .with_context(|| format!("{name} was not found on PATH. Install the database client tools to use backup and restore."))
 }
 
+/// A mongodump/mongorestore config file holding the connection string, so
+/// the password stays out of the process list. Readable by the user only.
+fn mongo_tool_config(c: &ConnectionConfig) -> Result<PathBuf> {
+    let path = std::env::temp_dir().join(format!("quarry-mongo-{}.yaml", uuid_like()));
+    let uri = quarry_core::driver::mongo_connection_string(c);
+    let mut options = std::fs::OpenOptions::new();
+    options.write(true).create_new(true);
+    #[cfg(unix)]
+    std::os::unix::fs::OpenOptionsExt::mode(&mut options, 0o600);
+    use std::io::Write as _;
+    options.open(&path)?.write_all(format!("uri: {}\n", serde_json::to_string(&uri)?).as_bytes())?;
+    Ok(path)
+}
+
+fn uuid_like() -> String {
+    format!("{}-{}", std::process::id(), std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_nanos()).unwrap_or(0))
+}
+
 fn run(mut cmd: Command) -> Result<()> {
     let out = cmd.env("PATH", quarry_core::shell_env::user_path()).output()?;
     if !out.status.success() {
@@ -95,21 +113,64 @@ fn backup(c: &ConnectionConfig, path: &std::path::Path) -> Result<String> {
         DriverKind::Sqlite => {
             std::fs::copy(&c.file_path, path)?;
         }
-        DriverKind::Postgres => {
+        DriverKind::CockroachDb => bail!(
+            "CockroachDB backs up with its own BACKUP statement, to cloud storage or a node's disk. Run, for example, \
+             BACKUP DATABASE {} INTO 'nodelocal://1/backups' in a SQL editor.",
+            if c.database.is_empty() { "defaultdb" } else { &c.database }
+        ),
+        DriverKind::Postgres | DriverKind::YugabyteDb => {
             if c.database.is_empty() {
                 bail!("set a database in the connection to back it up");
             }
-            let mut cmd = Command::new(tool("pg_dump")?);
+            // YugabyteDB ships its own pg_dump as ysql_dump.
+            let dump = match c.driver {
+                DriverKind::YugabyteDb => tool("ysql_dump").or_else(|_| tool("pg_dump"))?,
+                _ => tool("pg_dump")?,
+            };
+            let mut cmd = Command::new(dump);
             cmd.args(["-h", &c.host, "-p", &port, "-U", &c.user, "-d", &c.database, "-f"]).arg(path).env("PGPASSWORD", pw);
             run(cmd)?;
         }
-        DriverKind::MySql | DriverKind::MariaDb => {
+        DriverKind::MySql | DriverKind::MariaDb | DriverKind::TiDb => {
             if c.database.is_empty() {
                 bail!("set a database in the connection to back it up");
             }
             let mut cmd = Command::new(tool("mysqldump")?);
-            cmd.args(["-h", &c.host, "-P", &port, "-u", &c.user, "--result-file"]).arg(path).arg(&c.database).env("MYSQL_PWD", pw);
+            cmd.args(["-h", &c.host, "-P", &port, "-u", &c.user]);
+            if c.driver == DriverKind::TiDb {
+                // TiDB has no LOCK TABLES for dumps; a snapshot read is consistent.
+                cmd.args(["--single-transaction", "--skip-lock-tables", "--column-statistics=0"]);
+            }
+            cmd.arg("--result-file").arg(path).arg(&c.database).env("MYSQL_PWD", pw);
             run(cmd)?;
+        }
+        DriverKind::Redis => {
+            // An RDB snapshot of the whole server, downloaded over the connection.
+            let mut cmd = Command::new(tool("redis-cli")?);
+            cmd.args(["-h", &c.host, "-p", &port]);
+            if !c.user.trim().is_empty() {
+                cmd.args(["--user", c.user.trim()]);
+            }
+            if matches!(c.ssl_mode, quarry_core::SslMode::Require | quarry_core::SslMode::VerifyCa | quarry_core::SslMode::VerifyFull) {
+                cmd.arg("--tls");
+                if c.ssl_mode == quarry_core::SslMode::Require {
+                    cmd.arg("--insecure");
+                }
+            }
+            cmd.arg("--rdb").arg(path).env("REDISCLI_AUTH", pw);
+            run(cmd)?;
+        }
+        DriverKind::MongoDb => {
+            let db = if c.database.trim().is_empty() { None } else { Some(c.database.trim().to_string()) };
+            let mut cmd = Command::new(tool("mongodump")?);
+            let config = mongo_tool_config(c)?;
+            cmd.arg(format!("--config={}", config.display())).arg(format!("--archive={}", path.display())).arg("--gzip");
+            if let Some(db) = &db {
+                cmd.arg(format!("--db={db}"));
+            }
+            let r = run(cmd);
+            let _ = std::fs::remove_file(&config);
+            r?;
         }
         DriverKind::SqlServer => bail!(
             "SQL Server writes backups on the server itself. Run BACKUP DATABASE [name] TO DISK = N'/path/on/server/name.bak' \
@@ -123,26 +184,40 @@ async fn restore(c: ConnectionConfig, path: PathBuf) -> Result<String> {
     let port = c.port_or_default().to_string();
     let pw = c.password.clone().unwrap_or_default();
     match c.driver {
-        DriverKind::Sqlite => {
-            let script = std::fs::read_to_string(&path).context("SQLite restore expects a .sql script")?;
+        DriverKind::Sqlite | DriverKind::Redis => {
+            let what = if c.driver == DriverKind::Redis { "Redis restore expects a text file of commands, one per line" } else { "SQLite restore expects a .sql script" };
+            let script = std::fs::read_to_string(&path).context(what)?;
             let session = Session::connect(c).await?;
+            // Sessions open read-only; restoring is the write the user asked for.
+            session.set_read_only(false).await?;
             let out = session.run_script(&script, None).await;
             if let Some(quarry_core::Outcome::Error(e)) = out.last().map(|o| &o.outcome) {
                 bail!("{e}");
             }
             Ok(format!("Ran {} statements", out.len()))
         }
-        DriverKind::Postgres => tokio_blocking(move || {
+        DriverKind::Postgres | DriverKind::CockroachDb | DriverKind::YugabyteDb => tokio_blocking(move || {
             let mut cmd = Command::new(tool("psql")?);
             cmd.args(["-h", &c.host, "-p", &port, "-U", &c.user, "-d", &c.database, "-v", "ON_ERROR_STOP=1", "-f"]).arg(&path).env("PGPASSWORD", pw);
             run(cmd)?;
             Ok(format!("Restored {}", path.display()))
         })
         .await,
-        DriverKind::MySql | DriverKind::MariaDb => tokio_blocking(move || {
+        DriverKind::MySql | DriverKind::MariaDb | DriverKind::TiDb => tokio_blocking(move || {
             let mut cmd = Command::new(tool("mysql")?);
             cmd.args(["-h", &c.host, "-P", &port, "-u", &c.user, &c.database]).env("MYSQL_PWD", pw).stdin(std::fs::File::open(&path)?);
             run(cmd)?;
+            Ok(format!("Restored {}", path.display()))
+        })
+        .await,
+        // A mongodump archive (gzipped, as Quarry writes them).
+        DriverKind::MongoDb => tokio_blocking(move || {
+            let mut cmd = Command::new(tool("mongorestore")?);
+            let config = mongo_tool_config(&c)?;
+            cmd.arg(format!("--config={}", config.display())).arg(format!("--archive={}", path.display())).arg("--gzip");
+            let r = run(cmd);
+            let _ = std::fs::remove_file(&config);
+            r?;
             Ok(format!("Restored {}", path.display()))
         })
         .await,

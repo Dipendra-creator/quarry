@@ -14,8 +14,9 @@ through `quarry-ai`.
                    ▼                        ▼
             ┌─────────────────────────────────────┐
             │ quarry-core                         │
-            │  Session ── Driver (trait) ── PG / MySQL / SQL Server / SQLite
+            │  Session ── Driver (trait) ── PG / MySQL / SQL Server / SQLite / Redis / MongoDB
             │  sql: dialect, filters, splitting, auto-limit, format
+            │  commands, mongo_shell: Redis and mongosh command languages
             │  changes: staged row edits → INSERT/UPDATE/DELETE
             │  alter: structure edits → ALTER/CREATE/DROP INDEX
             │  import / export, ssh tunnel, store (files + keychain)
@@ -34,7 +35,25 @@ through `quarry-ai`.
   - MySQL and MariaDB use `mysql_async` on one connection behind a mutex. Batches run
     inside `START TRANSACTION … COMMIT`. Columns with the binary charset come back as
     bytes.
+  - CockroachDB and YugabyteDB use the PostgreSQL driver, and TiDB the MySQL one. Each
+    `DriverKind` has a `base()` engine whose dialect it shares; the drivers branch on the
+    kind only where the servers differ (CockroachDB's hex session ids and own system
+    schemas, TiDB's missing read-only sessions and binary default collation).
+    `DriverKind::transactional_ddl` says whether a failed batch of schema changes is
+    undone; where it is not, `Session::apply_structure` runs the changes one by one and
+    reports which ones were made.
   - SQLite uses `rusqlite` (bundled) on `spawn_blocking`.
+  - Redis uses `redis` (one multiplexed connection). Keys are items whose `ItemKind`
+    is their type; a key's value is browsed as rows, filtered, sorted and paged in memory
+    (`query::filter_sort_page`). Grid edits become commands applied in `MULTI`/`EXEC`.
+    `commands` parses and quotes redis-cli lines and knows which commands only read.
+  - MongoDB uses the official `mongodb` driver. Collections are items; documents are
+    rows whose columns are sampled top-level fields with their BSON types, which type
+    edited cells. The filter bar becomes a query document. `mongo_shell` parses the
+    editor's mongosh subset (`db.c.find(…).sort(…)`, shell helpers, extended JSON),
+    prints values back in the same syntax, splits scripts and classifies reads.
+  - Engines that do not speak SQL answer `Driver::browse`, `count`, `browse_text` and
+    `changes_text` themselves; the defaults return `None` and leave them to `Dialect`.
   - SQL Server uses `tiberius` on one connection behind a mutex. Batches run inside
     `BEGIN TRANSACTION … COMMIT` with `XACT_ABORT` on. Plans come from `SHOWPLAN_TEXT`
     (or `STATISTICS PROFILE` for analyze) through `Driver::explain`, because they are
@@ -123,9 +142,12 @@ and runs each chat turn on the core runtime, streaming `ChatEvent`s back to the 
 
 ## Adding a driver
 
-1. Add a `DriverKind` variant (label, badge, default port and user).
+1. Add a `DriverKind` variant (label, badge, default port and user). A database that
+   speaks another one's protocol only needs a `base()` engine and the branches where it
+   differs. A hosted flavor with nothing to change is a `Preset` instead.
 2. Implement `Driver` in `crates/quarry-core/src/driver/<name>.rs` and route it in
-   `driver::connect`.
+   `driver::connect`. A non-SQL engine also implements `browse`, `count` and
+   `changes_text`, and returns `false` from `DriverKind::is_sql`.
 3. If its SQL differs, adjust `Dialect`: quoting, literals, `LIMIT`, structure SQL.
 4. Add a case to `tests/live.rs` gated by an environment variable.
 5. Give it a badge color in `theme.rs`. The UI and the AI tools need no other change.

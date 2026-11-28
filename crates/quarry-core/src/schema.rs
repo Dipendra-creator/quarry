@@ -6,11 +6,22 @@ use serde::{Deserialize, Serialize};
 #[serde(rename_all = "snake_case")]
 pub enum ItemKind {
     Table,
+    /// A MongoDB collection.
+    Collection,
     View,
     MaterializedView,
     Function,
     Procedure,
     Sequence,
+    /// Redis keys, by the type of value they hold.
+    StringKey,
+    HashKey,
+    ListKey,
+    SetKey,
+    ZSetKey,
+    StreamKey,
+    JsonKey,
+    OtherKey,
 }
 
 impl ItemKind {
@@ -18,16 +29,46 @@ impl ItemKind {
     pub fn section(self) -> &'static str {
         match self {
             ItemKind::Table => "Tables",
+            ItemKind::Collection => "Collections",
             ItemKind::View => "Views",
             ItemKind::MaterializedView => "Materialized Views",
             ItemKind::Function => "Functions",
             ItemKind::Procedure => "Procedures",
             ItemKind::Sequence => "Sequences",
+            ItemKind::StringKey => "Strings",
+            ItemKind::HashKey => "Hashes",
+            ItemKind::ListKey => "Lists",
+            ItemKind::SetKey => "Sets",
+            ItemKind::ZSetKey => "Sorted Sets",
+            ItemKind::StreamKey => "Streams",
+            ItemKind::JsonKey => "JSON",
+            ItemKind::OtherKey => "Other Keys",
         }
     }
 
     pub fn has_rows(self) -> bool {
-        matches!(self, ItemKind::Table | ItemKind::View | ItemKind::MaterializedView)
+        !matches!(self, ItemKind::Function | ItemKind::Procedure | ItemKind::Sequence)
+    }
+
+    /// A Redis key.
+    pub fn is_key(self) -> bool {
+        matches!(
+            self,
+            ItemKind::StringKey
+                | ItemKind::HashKey
+                | ItemKind::ListKey
+                | ItemKind::SetKey
+                | ItemKind::ZSetKey
+                | ItemKind::StreamKey
+                | ItemKind::JsonKey
+                | ItemKind::OtherKey
+        )
+    }
+
+    /// Whether its rows can be edited in the grid: tables, collections and
+    /// the Redis types Quarry knows how to write.
+    pub fn is_editable(self) -> bool {
+        matches!(self, ItemKind::Table | ItemKind::Collection) || (self.is_key() && !matches!(self, ItemKind::JsonKey | ItemKind::OtherKey))
     }
 }
 

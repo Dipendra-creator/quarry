@@ -7,11 +7,12 @@ use gpui_kit::component::menu::{DropdownMenu as _, PopupMenuItem};
 use gpui_kit::component::{Sizable as _, TitleBar, h_flex, v_flex};
 use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::*;
+use quarry_core::model::{PRESETS, Preset};
 use quarry_core::{ConnTag, ConnectionConfig, DriverKind, Session, SslMode};
 
 use crate::state::{AppState, db};
 use crate::theme::{PaletteExt as _, UI_TEXT};
-use crate::widgets::{driver_badge, footer_button, icon};
+use crate::widgets::{badge, driver_badge, footer_button, icon};
 use crate::{prompt, welcome, workspace};
 
 fn window_options(w: f32, h: f32, cx: &App) -> WindowOptions {
@@ -25,11 +26,63 @@ fn window_options(w: f32, h: f32, cx: &App) -> WindowOptions {
 }
 
 pub fn open_driver_picker(cx: &mut App) {
-    let _ = gpui_kit::open_window(window_options(764., 490., cx), cx, |window, cx| cx.new(|cx| DriverPicker::new(window, cx)));
+    let _ = gpui_kit::open_window(window_options(764., 580., cx), cx, |window, cx| cx.new(|cx| DriverPicker::new(window, cx)));
 }
 
 pub fn open_new(driver: DriverKind, cx: &mut App) {
     open_form(ConnectionConfig::new(driver), true, cx);
+}
+
+/// A new connection with a cloud service's defaults (Supabase, Neon, …).
+fn open_preset(preset: &'static Preset, cx: &mut App) {
+    let config = ConnectionConfig { name: preset.label.into(), ..preset.config() };
+    let _ = gpui_kit::open_window(window_options(560., 760., cx), cx, move |window, cx| {
+        cx.new(|cx| {
+            let form = ConnectionForm::new(config, true, window, cx);
+            form.host.update(cx, |h, cx| h.set_placeholder(preset.host_hint, window, cx));
+            form
+        })
+    });
+}
+
+/// One tile of the driver picker: a database, or a cloud service of one.
+#[derive(Clone, Copy)]
+enum Choice {
+    Driver(DriverKind),
+    Preset(&'static Preset),
+}
+
+impl Choice {
+    fn label(self) -> &'static str {
+        match self {
+            Choice::Driver(d) => d.label(),
+            Choice::Preset(p) => p.label,
+        }
+    }
+
+    fn keywords(self) -> &'static [&'static str] {
+        match self {
+            Choice::Driver(d) => d.keywords(),
+            Choice::Preset(p) => p.keywords,
+        }
+    }
+
+    fn badge(self, size: f32, cx: &App) -> Div {
+        match self {
+            Choice::Driver(d) => driver_badge(d, size, cx),
+            Choice::Preset(p) => badge(p.badge, crate::theme::hex(p.color), size),
+        }
+    }
+}
+
+impl PartialEq for Choice {
+    fn eq(&self, other: &Self) -> bool {
+        match (self, other) {
+            (Choice::Driver(a), Choice::Driver(b)) => a == b,
+            (Choice::Preset(a), Choice::Preset(b)) => std::ptr::eq(*a, *b),
+            _ => false,
+        }
+    }
 }
 
 pub fn open_editor(id: &str, cx: &mut App) {
@@ -47,7 +100,7 @@ fn open_form(config: ConnectionConfig, is_new: bool, cx: &mut App) {
 
 pub struct DriverPicker {
     search: Entity<InputState>,
-    selected: DriverKind,
+    selected: Choice,
     _sub: Subscription,
 }
 
@@ -63,26 +116,32 @@ impl DriverPicker {
         // Typing filters right away.
         let focus = search.read(cx).focus_handle(cx);
         window.focus(&focus, cx);
-        Self { search, selected: DriverKind::Postgres, _sub }
+        Self { search, selected: Choice::Driver(DriverKind::Postgres), _sub }
     }
 
-    fn matches(&self, cx: &App) -> Vec<DriverKind> {
+    /// Databases, then cloud services, that match the search.
+    fn matches(&self, cx: &App) -> Vec<Choice> {
         let q = self.search.read(cx).value().to_lowercase();
         DriverKind::ALL
             .into_iter()
-            .filter(|d| q.is_empty() || d.label().to_lowercase().contains(&q) || d.keywords().iter().any(|k| k.contains(q.as_str())))
+            .map(Choice::Driver)
+            .chain(PRESETS.iter().map(Choice::Preset))
+            .filter(|c| q.is_empty() || c.label().to_lowercase().contains(&q) || c.keywords().iter().any(|k| k.contains(q.as_str())))
             .collect()
     }
 
-    /// The selected driver, or the first one the search shows when the search hides it.
-    fn effective(&self, cx: &App) -> Option<DriverKind> {
+    /// The selected tile, or the first one the search shows when the search hides it.
+    fn effective(&self, cx: &App) -> Option<Choice> {
         let shown = self.matches(cx);
         if shown.contains(&self.selected) { Some(self.selected) } else { shown.first().copied() }
     }
 
     fn create(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        let Some(driver) = self.effective(cx) else { return };
-        open_new(driver, cx);
+        match self.effective(cx) {
+            Some(Choice::Driver(d)) => open_new(d, cx),
+            Some(Choice::Preset(p)) => open_preset(p, cx),
+            None => return,
+        }
         window.remove_window();
     }
 }
@@ -93,6 +152,35 @@ impl Render for DriverPicker {
         let current = self.effective(cx);
         let items = self.matches(cx);
         let none = items.is_empty();
+        let tile = |c: Choice, cx: &mut Context<Self>| {
+            let selected = Some(c) == current;
+            v_flex()
+                .id(c.label())
+                .w(px(100.))
+                .h(px(104.))
+                .my(px(12.))
+                .items_center()
+                .pt(px(4.))
+                .rounded(px(4.))
+                .border_1()
+                .border_color(if selected { p.accent } else { transparent_black() })
+                .child(c.badge(52., cx))
+                .child(div().mt(px(8.)).px(px(2.)).text_size(px(13.)).text_center().line_height(px(16.)).child(c.label()))
+                .on_click(cx.listener(move |this, ev: &ClickEvent, window, cx| {
+                    this.selected = c;
+                    cx.notify();
+                    if crate::widgets::is_double(ev) {
+                        this.create(window, cx);
+                    }
+                }))
+        };
+        let (databases, services): (Vec<Choice>, Vec<Choice>) = items.into_iter().partition(|c| matches!(c, Choice::Driver(_)));
+        let section = |title: &'static str| {
+            div().w_full().px(px(16.)).pt(px(10.)).text_size(px(11.)).font_weight(FontWeight::SEMIBOLD).text_color(p.secondary_text).child(title)
+        };
+        let has_services = !services.is_empty();
+        let database_tiles: Vec<_> = databases.into_iter().map(|c| tile(c, cx)).collect();
+        let service_tiles: Vec<_> = services.into_iter().map(|c| tile(c, cx)).collect();
         v_flex()
             .size_full()
             .bg(p.window)
@@ -109,33 +197,17 @@ impl Render for DriverPicker {
                         div()
                             .id("drivers")
                             .flex_1()
+                            .min_h(px(0.))
                             .rounded(px(4.))
                             .border_1()
                             .border_color(p.border)
                             .overflow_y_scroll()
                             .when(none, |d| d.child(crate::widgets::placeholder("No matching database", cx)))
-                            .child(h_flex().flex_wrap().justify_center().children(items.into_iter().map(|d| {
-                                let selected = Some(d) == current;
-                                v_flex()
-                                    .id(d.label())
-                                    .w(px(100.))
-                                    .h(px(104.))
-                                    .my(px(12.))
-                                    .items_center()
-                                    .pt(px(4.))
-                                    .rounded(px(4.))
-                                    .border_1()
-                                    .border_color(if selected { p.accent } else { transparent_black() })
-                                    .child(driver_badge(d, 52., cx))
-                                    .child(div().mt(px(8.)).text_size(px(14.)).child(d.label()))
-                                    .on_click(cx.listener(move |this, ev: &ClickEvent, window, cx| {
-                                        this.selected = d;
-                                        cx.notify();
-                                        if crate::widgets::is_double(ev) {
-                                            this.create(window, cx);
-                                        }
-                                    }))
-                            }))),
+                            .child(h_flex().flex_wrap().justify_center().children(database_tiles))
+                            .when(has_services, |d| {
+                                d.child(section("CLOUD SERVICES"))
+                                    .child(h_flex().flex_wrap().justify_center().children(service_tiles))
+                            }),
                     )
                     .child(
                         h_flex()
@@ -202,7 +274,15 @@ impl ConnectionForm {
             cx.new(|cx| InputState::new(window, cx).placeholder(placeholder).default_value(value).masked(masked))
         }
         let default_port = config.driver.default_port().map(|p| p.to_string()).unwrap_or_default();
-        let host_hint = if config.driver == DriverKind::SqlServer { "127.0.0.1, or server.database.windows.net" } else { "127.0.0.1" };
+        let host_hint = match config.driver {
+            DriverKind::SqlServer => "127.0.0.1, or server.database.windows.net",
+            DriverKind::CockroachDb => "127.0.0.1, or ….cockroachlabs.cloud",
+            DriverKind::YugabyteDb => "127.0.0.1, or ….ybdb.io",
+            DriverKind::TiDb => "127.0.0.1, or gateway….tidbcloud.com",
+            DriverKind::Redis => "127.0.0.1, or ….cache.amazonaws.com",
+            DriverKind::MongoDb => "127.0.0.1, or a mongodb+srv://… connection string",
+            _ => "127.0.0.1",
+        };
         let port = config.port.map(|p| p.to_string()).unwrap_or_default();
         let ssh = config.ssh.clone().unwrap_or_default();
         let ssh_port = if ssh.port == 0 { String::new() } else { ssh.port.to_string() };
@@ -211,14 +291,20 @@ impl ConnectionForm {
             name: field(window, cx, &config.name, "Connection name", false),
             host: field(window, cx, &config.host, host_hint, false),
             port: field(window, cx, &port, &default_port, false),
-            user: field(window, cx, &config.user, "user name", false),
+            user: field(window, cx, &config.user, if config.driver == DriverKind::Redis { "ACL user (empty for the default user)" } else { "user name" }, false),
             password: field(window, cx, config.password.as_deref().unwrap_or_default(), "password", true),
-            database: field(window, cx, &config.database, "database name", false),
+            database: field(window, cx, &config.database, match config.driver {
+                DriverKind::Redis => "database number, 0 to 15",
+                DriverKind::MongoDb => "database (empty: the first one)",
+                _ => "database name",
+            }, false),
             file_path: field(window, cx, &config.file_path, "Path to the database file", false),
-            startup: field(window, cx, &config.startup_commands, match config.driver {
+            startup: field(window, cx, &config.startup_commands, match config.driver.base() {
                 DriverKind::Postgres => "SQL run after connecting, e.g. SET search_path TO app;",
                 DriverKind::SqlServer => "SQL run after connecting, e.g. SET LANGUAGE us_english;",
                 DriverKind::Sqlite => "SQL run after opening, e.g. PRAGMA journal_mode = WAL;",
+                DriverKind::Redis => "Commands run after connecting, one per line, e.g. CLIENT SETNAME quarry",
+                DriverKind::MongoDb => "Commands run after connecting, e.g. db.runCommand({ping: 1})",
                 _ => "SQL run after connecting, e.g. SET time_zone = '+00:00';",
             }, false),
             ssh_host: field(window, cx, &ssh.host, "ssh.example.com", false),
