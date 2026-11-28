@@ -417,6 +417,21 @@ impl Render for Welcome {
                                     .on_click(|_, _, cx| connection_form::open_driver_picker(cx)),
                             )
                             .child(Input::new(&self.search).prefix(crate::widgets::search_icon(cx)).cleanable(true).h(px(24.)))
+                            .child({
+                                let tip: SharedString = crate::actions::with_key("Keyboard shortcuts", "show_shortcuts", cx).into();
+                                div()
+                                    .id("shortcuts")
+                                    .size(px(24.))
+                                    .flex()
+                                    .flex_shrink_0()
+                                    .items_center()
+                                    .justify_center()
+                                    .rounded(px(4.))
+                                    .hover(|s| s.bg(p.hover))
+                                    .child(icon(IconName::Keyboard, 14., p.icon))
+                                    .on_click(|_, window, cx| crate::shortcuts::open(window, cx))
+                                    .tooltip(move |window, cx| gpui_kit::component::tooltip::Tooltip::new(tip.clone()).build(window, cx))
+                            })
                             .children(crate::update::pill(cx)),
                     )
                     .child(

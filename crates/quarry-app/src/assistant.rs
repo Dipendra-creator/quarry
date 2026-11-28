@@ -242,7 +242,7 @@ impl AssistantPanel {
             )
             .child(button("ai-settings", IconName::Settings, "AI settings".into()).on_click(|_, window, cx| crate::preferences::open_ai(window, cx)))
             .child(button("ai-new", IconName::SquarePen, "New chat".into()).on_click(cx.listener(|p, _, _, cx| p.new_chat(cx))))
-            .child(button("ai-close", IconName::X, format!("Close ({})", crate::actions::kbd("Ctrl+L"))).on_click(cx.listener(|_, _, _, cx| cx.emit(AssistantEvent::Close))))
+            .child(button("ai-close", IconName::X, crate::actions::with_key("Close", "toggle_assistant", cx)).on_click(cx.listener(|_, _, _, cx| cx.emit(AssistantEvent::Close))))
     }
 
     fn render_part(&self, entry: usize, part: usize, value: &Part, cx: &mut Context<Self>) -> AnyElement {

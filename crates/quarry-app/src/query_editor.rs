@@ -19,7 +19,7 @@ use crate::data_view::RowSnapshot;
 use crate::grid::{GridDelegate, readonly_table};
 use crate::state::{AppState, db};
 use crate::theme::{MONO, PaletteExt as _, UI_TEXT};
-use crate::actions::kbd;
+use crate::actions::with_key;
 use crate::widgets::segmented;
 use crate::{guard, prompt};
 
@@ -369,12 +369,12 @@ Find the cause and give me a corrected query:
             }))
             .child(Button::new("q-save").label("Save").xsmall().outline().dropdown_caret(true).dropdown_menu({
                 let this = this.clone();
-                move |menu, _, _| {
+                move |menu, _, cx| {
                     let (a, b) = (this.clone(), this.clone());
-                    menu.item(PopupMenuItem::new(format!("Save to Queries list ({})", kbd("Ctrl+S"))).on_click(move |_, window, cx| {
+                    menu.item(PopupMenuItem::new(with_key("Save to Queries list", "commit", cx)).on_click(move |_, window, cx| {
                         let _ = a.update(cx, |e, cx| e.save_query(window, cx));
                     }))
-                    .item(PopupMenuItem::new(format!("Save as .sql file... ({})", kbd("Ctrl+Shift+S"))).on_click(move |_, window, cx| {
+                    .item(PopupMenuItem::new(with_key("Save as .sql file...", "save_file", cx)).on_click(move |_, window, cx| {
                         let _ = b.update(cx, |e, cx| e.save_file(window, cx));
                     }))
                 }
@@ -430,17 +430,17 @@ Find the cause and give me a corrected query:
                             .xsmall()
                             .primary()
                             .loading(self.running)
-                            .tooltip(format!("Run the current query ({})", kbd("Ctrl+Enter")))
+                            .tooltip(with_key("Run the current query", "run_current", cx))
                             .on_click(cx.listener(|e, _, window, cx| e.run_current(window, cx))),
                     )
                     .child(Button::new("q-run-menu").icon(IconName::ChevronDown).xsmall().primary().dropdown_menu({
                         let this = this.clone();
-                        move |menu, _, _| {
+                        move |menu, _, cx| {
                             let (a, b) = (this.clone(), this.clone());
-                            menu.item(PopupMenuItem::new(format!("Run Current ({})", kbd("Ctrl+Enter"))).on_click(move |_, window, cx| {
+                            menu.item(PopupMenuItem::new(with_key("Run Current", "run_current", cx)).on_click(move |_, window, cx| {
                                 let _ = a.update(cx, |e, cx| e.run_current(window, cx));
                             }))
-                            .item(PopupMenuItem::new(format!("Run All ({})", kbd("Ctrl+Shift+Enter"))).on_click(move |_, window, cx| {
+                            .item(PopupMenuItem::new(with_key("Run All", "run_all", cx)).on_click(move |_, window, cx| {
                                 let _ = b.update(cx, |e, cx| e.run_all(window, cx));
                             }))
                         }

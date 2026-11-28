@@ -12,7 +12,7 @@ use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::*;
 use quarry_core::{Filter, Item, ItemKind, SafeMode, Session};
 
-use crate::actions::{kbd, *};
+use crate::actions::*;
 use crate::assistant::{AssistantEvent, AssistantPanel};
 use crate::data_view::{DataView, DataViewEvent, Mode, RowSnapshot};
 use crate::picker::{self, PickerItem};
@@ -154,13 +154,13 @@ impl WorkspaceWindow {
                             .child(capsule_separator(cx))
                             .child(capsule_button("preview", IconName::Eye, "Preview changes", has_changes, cx, on(|w, window, cx| w.preview(window, cx))))
                             .child(capsule_separator(cx))
-                            .child(capsule_button("commit", IconName::Check, format!("Commit changes ({})", kbd("Ctrl+S")), has_changes, cx, on(|w, window, cx| w.commit(window, cx)))),
+                            .child(capsule_button("commit", IconName::Check, with_key("Commit changes", "commit", cx), has_changes, cx, on(|w, window, cx| w.commit(window, cx)))),
                     )
                     .child(
                         capsule(cx)
                             .child(safe_menu)
-                            .child(capsule_button("databases", IconName::Database, format!("Show databases list ({})", kbd("Ctrl+K")), true, cx, on(|w, window, cx| w.database_list(window, cx))))
-                            .child(capsule_text_button("sql", "SQL", format!("Open SQL editor ({})", kbd("Ctrl+E")), cx, on(|w, window, cx| w.new_query(window, cx)))),
+                            .child(capsule_button("databases", IconName::Database, with_key("Show databases list", "database_list", cx), true, cx, on(|w, window, cx| w.database_list(window, cx))))
+                            .child(capsule_text_button("sql", "SQL", with_key("Open SQL editor", "new_query", cx), cx, on(|w, window, cx| w.new_query(window, cx)))),
                     ),
             )
             .child(
@@ -198,14 +198,14 @@ impl WorkspaceWindow {
                     .child(
                         capsule(cx)
                             .child(capsule_button("refresh", IconName::RefreshCw, "Refresh workspace", true, cx, on(|w, window, cx| w.refresh(window, cx))))
-                            .child(capsule_button("anything", IconName::Command, format!("Open anything ({})", kbd("Ctrl+P")), true, cx, on(|w, window, cx| w.open_anything(window, cx))))
-                            .child(capsule_button("assistant", IconName::Sparkles, format!("AI assistant ({})", kbd("Ctrl+L")), true, cx, on(|w, window, cx| w.toggle_assistant(window, cx)))),
+                            .child(capsule_button("anything", IconName::Command, with_key("Open anything", "open_anything", cx), true, cx, on(|w, window, cx| w.open_anything(window, cx))))
+                            .child(capsule_button("assistant", IconName::Sparkles, with_key("AI assistant", "toggle_assistant", cx), true, cx, on(|w, window, cx| w.toggle_assistant(window, cx)))),
                     )
                     .child(
                         capsule(cx)
-                            .child(capsule_button("console", IconName::PanelBottom, format!("Toggle console log ({})", kbd("Ctrl+Alt+C")), true, cx, on(|w, _, cx| w.toggle_console(cx))))
+                            .child(capsule_button("console", IconName::PanelBottom, with_key("Toggle console log", "toggle_console", cx), true, cx, on(|w, _, cx| w.toggle_console(cx))))
                             .child(capsule_separator(cx))
-                            .child(capsule_button("detail", IconName::PanelRight, format!("Toggle row detail ({})", kbd("Ctrl+Space")), true, cx, on(|w, _, cx| w.toggle_detail(cx)))),
+                            .child(capsule_button("detail", IconName::PanelRight, with_key("Toggle row detail", "toggle_detail", cx), true, cx, on(|w, _, cx| w.toggle_detail(cx)))),
                     ),
             )
     }
@@ -777,16 +777,17 @@ impl ConnWorkspace {
 
     fn show_menu(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let items = vec![
-            PickerItem { label: "New SQL query".into(), detail: kbd("Ctrl+E"), icon: IconName::FileCode },
-            PickerItem { label: "Open anything".into(), detail: kbd("Ctrl+P"), icon: IconName::Search },
-            PickerItem { label: "Open database".into(), detail: kbd("Ctrl+K"), icon: IconName::Database },
-            PickerItem { label: "Open SQL file...".into(), detail: kbd("Ctrl+O"), icon: IconName::FolderOpen },
-            PickerItem { label: "Processes".into(), detail: kbd("Ctrl+."), icon: IconName::Cpu },
-            PickerItem { label: "AI assistant".into(), detail: kbd("Ctrl+L"), icon: IconName::Sparkles },
-            PickerItem { label: "Reconnect".into(), detail: kbd("Ctrl+Shift+R"), icon: IconName::RefreshCw },
-            PickerItem { label: "Disconnect".into(), detail: kbd("Shift+F5"), icon: IconName::Unplug },
-            PickerItem { label: "Preferences".into(), detail: kbd("Ctrl+,"), icon: IconName::Settings },
-            PickerItem { label: "Check for updates...".into(), detail: String::new(), icon: IconName::CircleArrowUp },
+            PickerItem { label: "New SQL query".into(), detail: label("new_query", cx), icon: IconName::FileCode },
+            PickerItem { label: "Open anything".into(), detail: label("open_anything", cx), icon: IconName::Search },
+            PickerItem { label: "Open database".into(), detail: label("database_list", cx), icon: IconName::Database },
+            PickerItem { label: "Open SQL file...".into(), detail: label("open_file", cx), icon: IconName::FolderOpen },
+            PickerItem { label: "Processes".into(), detail: label("process_list", cx), icon: IconName::Cpu },
+            PickerItem { label: "AI assistant".into(), detail: label("toggle_assistant", cx), icon: IconName::Sparkles },
+            PickerItem { label: "Reconnect".into(), detail: label("reconnect", cx), icon: IconName::RefreshCw },
+            PickerItem { label: "Disconnect".into(), detail: label("disconnect", cx), icon: IconName::Unplug },
+            PickerItem { label: "Preferences".into(), detail: label("preferences", cx), icon: IconName::Settings },
+            PickerItem { label: "Keyboard shortcuts".into(), detail: label("show_shortcuts", cx), icon: IconName::Keyboard },
+            PickerItem { label: "Check for updates...".into(), detail: label("check_for_updates", cx), icon: IconName::CircleArrowUp },
         ];
         let this = cx.entity().downgrade();
         picker::open("Menu", "Search for command...", items, window, cx, move |ix, window, cx| {
@@ -800,6 +801,7 @@ impl ConnWorkspace {
                 6 => w.reconnect(window, cx),
                 7 => w.disconnect(window, cx),
                 8 => crate::preferences::open(window, cx),
+                9 => crate::shortcuts::open(window, cx),
                 _ => crate::update::check_now(window, cx),
             });
         });
@@ -914,6 +916,23 @@ fn time_of_day() -> String {
     format!("{:02}:{:02}:{:02}", s / 3600, (s / 60) % 60, s % 60)
 }
 
+/// What to do in a workspace with no tab open, with the current keys.
+fn empty_hint(cx: &App) -> String {
+    let press = |id: &str, what: &str| match label(id, cx) {
+        l if l.is_empty() => String::new(),
+        l => format!(", press {l} {what}"),
+    };
+    format!(
+        "No item\n\nSelect a table in the left sidebar{}{}. Press {} for all keyboard shortcuts.",
+        press("open_anything", "to open anything"),
+        press("new_query", "for a SQL editor"),
+        match label("show_shortcuts", cx) {
+            l if l.is_empty() => "the menu's Keyboard shortcuts".to_string(),
+            l => l,
+        }
+    )
+}
+
 impl Render for ConnWorkspace {
     fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let p = cx.palette().clone();
@@ -922,7 +941,7 @@ impl Render for ConnWorkspace {
             Some(TabContent::Query(q)) => q.clone().into_any_element(),
             None => placeholder(
                 if self.tabs.is_empty() {
-                    format!("No item\n\nSelect a table in the left sidebar, press {} to open anything or {} for a SQL editor.", kbd("Ctrl+P"), kbd("Ctrl+E"))
+                    empty_hint(cx)
                 } else {
                     "No item".to_string()
                 },

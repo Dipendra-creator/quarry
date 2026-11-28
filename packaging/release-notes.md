@@ -1,5 +1,11 @@
 Native database client, SQL editor and AI assistant for PostgreSQL, MySQL, MariaDB, Microsoft SQL Server and SQLite. MIT licensed.
 
+## What's new in 0.2.4
+
+**Keyboard shortcuts guide, and your own shortcuts.** Press **F1** (or Ctrl+Alt+K, ⌥⌘K on a Mac) anywhere in Quarry to see every keyboard shortcut, grouped and searchable. It also opens from the keyboard icon in the connections window, the workspace menu, Preferences → General, and Help → Keyboard Shortcuts on macOS.
+
+Every shortcut can be changed there: click a key and press the new one, click **+** to add another key, or **×** to remove one. If the key already belongs to another command in the same place, it moves to the one you are editing, and Quarry tells you. Changes apply at once, and tooltips, menus and hints show your keys. They are saved in `keymap.json` in Quarry's settings folder; **Reset all** brings back the defaults.
+
 ## What's new in 0.2.3
 
 **Fixes a crash when switching a connection to Full access.** In 0.2.2, clicking **Full access** in the title bar closed Quarry (connections tagged production, which ask first, were not affected). Switching between Read only and Full access now works both ways.

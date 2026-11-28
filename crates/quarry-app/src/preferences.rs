@@ -1,6 +1,6 @@
-//! Preferences dialog (Ctrl+,). General: appearance and SQL editor row
-//! limit. AI: the assistant's backend (Claude Code, Codex, Anthropic API,
-//! OpenAI API) and what AI tools may change.
+//! Preferences dialog (Ctrl+,). General: appearance, SQL editor row limit,
+//! keyboard shortcuts and updates. AI: the assistant's backend (Claude Code,
+//! Codex, Anthropic API, OpenAI API) and what AI tools may change.
 
 use gpui_kit::component::WindowExt as _;
 use gpui_kit::component::button::{Button, ButtonVariants as _};
@@ -222,6 +222,16 @@ impl Preferences {
                     });
                     window.refresh();
                 }),
+            ))
+            .child(row(
+                "Keyboard shortcuts",
+                h_flex()
+                    .gap(px(10.))
+                    .child(Button::new("shortcuts").label("Show and change…").small().outline().on_click(|_, window, cx| {
+                        // In place of this dialog, once its click is done.
+                        window.defer(cx, crate::shortcuts::open);
+                    }))
+                    .child(div().text_size(px(11.)).text_color(cx.palette().secondary_text).child(crate::actions::with_key("Also from anywhere", "show_shortcuts", cx))),
             ))
             .child(hline(cx))
             .child(row("Updates", self.render_updates(cx)))

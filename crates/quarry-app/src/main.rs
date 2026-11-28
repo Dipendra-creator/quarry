@@ -17,6 +17,7 @@ mod processes;
 mod prompt;
 mod query_editor;
 mod row_detail;
+mod shortcuts;
 mod sidebar;
 mod state;
 mod theme;
@@ -46,18 +47,23 @@ fn main() {
         .detach();
         let dark = state::AppState::get(cx).settings.appearance == state::Appearance::Dark;
         theme::apply(dark, None, cx);
-        actions::bind(cx);
-        set_menus(cx);
+        // After gpui_kit::init: the library's own keys are kept as the base.
+        actions::init(cx);
         cx.on_action(|_: &actions::Quit, cx| cx.quit());
         cx.on_action(|_: &actions::OpenConnections, cx| welcome::open(cx));
         cx.on_action(|_: &actions::CloseWindow, cx| {
-            if let Some(w) = cx.active_window() {
-                let _ = w.update(cx, |_, window, _| window.remove_window());
-            }
+            cx.defer(|cx| {
+                if let Some(w) = cx.active_window() {
+                    let _ = w.update(cx, |_, window, _| window.remove_window());
+                }
+            })
         });
-        // From the macOS menu bar, which has no window to dispatch to.
-        cx.on_action(|_: &actions::Preferences, cx| with_window(cx, crate::preferences::open));
-        cx.on_action(|_: &actions::CheckForUpdates, cx| with_window(cx, update::check_now));
+        // From the macOS menu bar, which has no window to dispatch to, and from
+        // keys in windows without their own handler. Deferred: a key arrives
+        // while its window is busy dispatching it and cannot be updated.
+        cx.on_action(|_: &actions::Preferences, cx| cx.defer(|cx| with_window(cx, crate::preferences::open)));
+        cx.on_action(|_: &actions::CheckForUpdates, cx| cx.defer(|cx| with_window(cx, update::check_now)));
+        cx.on_action(|_: &actions::ShowShortcuts, cx| cx.defer(|cx| with_window(cx, shortcuts::open)));
         cx.on_window_closed(|cx, _| {
             if cx.windows().is_empty() {
                 cx.quit();
@@ -79,7 +85,8 @@ fn with_window(cx: &mut gpui_kit::App, f: fn(&mut gpui_kit::Window, &mut gpui_ki
 
 /// The macOS menu bar: the app menu (with Quit, so Cmd+Q works) and an Edit
 /// menu whose items reach the focused text field. Other platforms have none.
-fn set_menus(cx: &mut gpui_kit::App) {
+/// Set again whenever shortcuts change, as the items show their keys.
+pub(crate) fn set_menus(cx: &mut gpui_kit::App) {
     use gpui_kit::component::input::{Copy, Cut, Paste, Redo, SelectAll, Undo};
     use gpui_kit::{Menu, MenuItem};
     if !cfg!(target_os = "macos") {
@@ -90,6 +97,7 @@ fn set_menus(cx: &mut gpui_kit::App) {
             MenuItem::action("Check for Updates…", actions::CheckForUpdates),
             MenuItem::separator(),
             MenuItem::action("Settings…", actions::Preferences),
+            MenuItem::action("Keyboard Shortcuts…", actions::ShowShortcuts),
             MenuItem::separator(),
             MenuItem::action("Quit Quarry", actions::Quit),
         ]),
@@ -106,5 +114,6 @@ fn set_menus(cx: &mut gpui_kit::App) {
             MenuItem::action("Connections", actions::OpenConnections),
             MenuItem::action("Close Window", actions::CloseWindow),
         ]),
+        Menu::new("Help").items([MenuItem::action("Keyboard Shortcuts", actions::ShowShortcuts)]),
     ]);
 }

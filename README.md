@@ -156,7 +156,7 @@ and a Vulkan-capable graphics driver are required.
 
 Settings live in `%APPDATA%\Quarry` on Windows, `~/Library/Application Support/Quarry` on
 macOS and `~/.config/Quarry` on Linux: `connections.json`, `queries.json`,
-`history.jsonl`, `settings.json` and `known_hosts`. Set `QUARRY_CONFIG_DIR` to use another
+`history.jsonl`, `settings.json`, `keymap.json` (your keyboard shortcuts) and `known_hosts`. Set `QUARRY_CONFIG_DIR` to use another
 folder. Passwords and API keys never go into these files. They are stored in Windows
 Credential Manager, the macOS Keychain or the Linux kernel keyring, under the service name
 `quarry`.
@@ -413,6 +413,13 @@ C++ Redistributable. It requires Windows 10 1809 or later.
 <details>
 <summary><b>Keyboard shortcuts</b></summary>
 
+Press <kbd>F1</kbd> (or <kbd>Ctrl</kbd>+<kbd>Alt</kbd>+<kbd>K</kbd>) anywhere for the
+Keyboard Shortcuts guide. It lists every shortcut and lets you change them: click a key to
+record a new one, **+** to add another, **×** to remove one. If a key already belongs to
+another command in the same place, it moves to the one you are editing. Your keys are saved
+in `keymap.json` in the settings folder and apply at once. **Reset all** returns to these
+defaults. On macOS every Ctrl shortcut also works with Cmd, except Ctrl+Tab and Ctrl+Space.
+
 | Keys | Action |
 | --- | --- |
 | <kbd>Ctrl</kbd>+<kbd>N</kbd> | Connection list |
@@ -436,6 +443,7 @@ C++ Redistributable. It requires Windows 10 1809 or later.
 | <kbd>Ctrl</kbd>+<kbd>L</kbd> | AI assistant |
 | <kbd>Ctrl</kbd>+<kbd>O</kbd> / <kbd>Ctrl</kbd>+<kbd>Shift</kbd>+<kbd>S</kbd> | Open a `.sql` file / save the editor to a file |
 | <kbd>Ctrl</kbd>+<kbd>,</kbd> | Preferences |
+| <kbd>F1</kbd> / <kbd>Ctrl</kbd>+<kbd>Alt</kbd>+<kbd>K</kbd> | Keyboard shortcuts guide |
 
 </details>
 
