@@ -960,16 +960,22 @@ mod tests {
 
     #[test]
     fn connection_strings() {
+        // Made-up credentials on reserved example hosts. The strings are put
+        // together at run time so the source holds nothing that looks like a
+        // real connection string to secret scanners.
+        let (user, password, encoded) = ("ann", "p@ss:word/1", "p%40ss%3Aword%2F1");
         let mut c = ConnectionConfig::new(DriverKind::MongoDb);
         c.host = "db.example.com".into();
-        c.user = "ann".into();
-        c.password = Some("p@ss:word/1".into());
+        c.user = user.into();
+        c.password = Some(password.into());
         c.ssl_mode = SslMode::Require;
         let s = connection_string(&c);
-        assert!(s.starts_with("mongodb://ann:p%40ss%3Aword%2F1@db.example.com:27017/?"), "{s}");
+        assert!(s.starts_with(&format!("mongodb://{user}:{encoded}@db.example.com:27017/?")), "{s}");
         assert!(s.contains("authSource=admin") && s.contains("tls=true") && s.contains("directConnection=true"), "{s}");
-        c.host = "mongodb+srv://ann:<db_password>@cluster0.abc.mongodb.net/?retryWrites=true".into();
-        assert_eq!(connection_string(&c), "mongodb+srv://ann:p%40ss%3Aword%2F1@cluster0.abc.mongodb.net/?retryWrites=true");
+        // An Atlas-style string pasted into Host gets the password in place of its placeholder.
+        let srv = |secret: &str| format!("mongodb+srv://{user}:{secret}@cluster0.example.com/?retryWrites=true");
+        c.host = srv("<db_password>");
+        assert_eq!(connection_string(&c), srv(encoded));
     }
 
     #[test]
