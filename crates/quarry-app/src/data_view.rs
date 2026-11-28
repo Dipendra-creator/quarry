@@ -1022,8 +1022,9 @@ impl DataView {
             .bg(p.window_secondary)
             .border_t_1()
             .border_color(p.separator)
-            // A Redis key has a value, not a structure.
-            .when(self.session.kind().is_sql(), |d| {
+            // A Redis key has a value, not a structure. MongoDB shows its
+            // sampled fields and indexes there, read-only.
+            .when(self.session.kind() != quarry_core::DriverKind::Redis, |d| {
                 d.child(segmented("dv-mode", &["Data", "Structure"], (self.mode == Mode::Structure) as usize, 64., cx, move |i, _, cx| {
                     let _ = this.update(cx, |v, cx| v.set_mode(if i == 0 { Mode::Data } else { Mode::Structure }, cx));
                 }))

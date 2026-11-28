@@ -107,6 +107,9 @@ impl Dialect {
 
     /// ALTER/CREATE/DROP statements for structure changes, in a safe order.
     pub fn structure_sql(self, table: &TableRef, changes: &[StructureChange]) -> Result<Vec<String>> {
+        if changes.is_empty() {
+            return Ok(vec![]);
+        }
         if !self.0.is_sql() {
             bail!("{} has no table structure to change", self.0.label());
         }

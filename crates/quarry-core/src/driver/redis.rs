@@ -62,12 +62,10 @@ impl RedisDriver {
         let tls = ConnectionAddr::TcpTls { host: cfg.host.clone(), port: cfg.port_or_default(), insecure: !verify, tls_params: None };
         let plain = ConnectionAddr::Tcp(cfg.host.clone(), cfg.port_or_default());
         let conn = match cfg.ssl_mode {
-            SslMode::Disable => Self::open(plain, cfg, db).await,
-            // "Preferred": TLS first, then plain, as for MySQL.
-            SslMode::Prefer => match Self::open(tls, cfg, db).await {
-                Ok(c) => Ok(c),
-                Err(_) => Self::open(plain, cfg, db).await,
-            },
+            // A plain server never answers a TLS handshake, so trying TLS
+            // first would stall every local connection until the timeout:
+            // "Preferred" connects without it. Cloud services need "Required".
+            SslMode::Disable | SslMode::Prefer => Self::open(plain, cfg, db).await,
             _ => Self::open(tls, cfg, db).await,
         }
         .context("could not connect to Redis")?;

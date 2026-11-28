@@ -510,7 +510,12 @@ impl ConnWorkspace {
 
     fn new_query(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         self.query_counter += 1;
-        let title = if self.query_counter == 1 { "SQL Query".to_string() } else { format!("SQL Query {}", self.query_counter) };
+        let base = match self.session.kind() {
+            quarry_core::DriverKind::Redis => "Commands",
+            quarry_core::DriverKind::MongoDb => "Query",
+            _ => "SQL Query",
+        };
+        let title = if self.query_counter == 1 { base.to_string() } else { format!("{base} {}", self.query_counter) };
         self.open_sql(title, String::new(), None, window, cx);
     }
 
@@ -917,15 +922,20 @@ fn time_of_day() -> String {
 }
 
 /// What to do in a workspace with no tab open, with the current keys.
-fn empty_hint(cx: &App) -> String {
+fn empty_hint(kind: quarry_core::DriverKind, cx: &App) -> String {
+    let (item, editor) = match kind {
+        quarry_core::DriverKind::Redis => ("key", "a command editor"),
+        quarry_core::DriverKind::MongoDb => ("collection", "a query editor"),
+        _ => ("table", "a SQL editor"),
+    };
     let press = |id: &str, what: &str| match label(id, cx) {
         l if l.is_empty() => String::new(),
         l => format!(", press {l} {what}"),
     };
     format!(
-        "No item\n\nSelect a table in the left sidebar{}{}. Press {} for all keyboard shortcuts.",
+        "No item\n\nSelect a {item} in the left sidebar{}{}. Press {} for all keyboard shortcuts.",
         press("open_anything", "to open anything"),
-        press("new_query", "for a SQL editor"),
+        press("new_query", &format!("for {editor}")),
         match label("show_shortcuts", cx) {
             l if l.is_empty() => "the menu's Keyboard shortcuts".to_string(),
             l => l,
@@ -941,7 +951,7 @@ impl Render for ConnWorkspace {
             Some(TabContent::Query(q)) => q.clone().into_any_element(),
             None => placeholder(
                 if self.tabs.is_empty() {
-                    empty_hint(cx)
+                    empty_hint(self.session.kind(), cx)
                 } else {
                     "No item".to_string()
                 },
